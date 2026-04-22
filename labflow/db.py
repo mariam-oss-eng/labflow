@@ -54,14 +54,3 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         sess.close()
-
-
-def reset_engine_for_tests(url: str) -> None:
-    """Reset module-level engine/session — used by the test suite."""
-    global _engine, _SessionLocal
-    _engine = None
-    _SessionLocal = None
-    os_env_set = url
-    import os as _os
-
-    _os.environ["LABFLOW_DATABASE_URL"] = os_env_set

@@ -21,6 +21,11 @@ from .schemas import EvidenceCreate, EvidenceOut, MeetingCreate, MeetingOut, Tas
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
+# Hard cap on user-supplied transcript size to bound regex work and memory.
+# Real meeting transcripts are well under this; uploads exceeding the cap
+# are rejected rather than silently truncated so users notice.
+MAX_TRANSCRIPT_BYTES = 1_000_000  # 1 MB
+
 
 def get_db() -> Session:
     SessionLocal = get_session_factory()
@@ -89,6 +94,8 @@ def create_app() -> FastAPI:
     # ----------------------------------------------------------- meeting API
     @app.post("/api/meetings", response_model=MeetingOut)
     def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db)) -> MeetingOut:
+        if len(payload.transcript) + len(payload.notes) > MAX_TRANSCRIPT_BYTES:
+            raise HTTPException(413, "transcript + notes exceed size limit")
         meeting = models.Meeting(
             title=payload.title,
             meeting_type=payload.meeting_type,
@@ -113,6 +120,8 @@ def create_app() -> FastAPI:
         db: Session = Depends(get_db),
     ) -> MeetingOut:
         transcript_bytes = await transcript_file.read() if transcript_file else b""
+        if len(transcript_bytes) > MAX_TRANSCRIPT_BYTES:
+            raise HTTPException(413, "transcript exceeds size limit")
         transcript = transcript_bytes.decode("utf-8", errors="replace")
         meeting = models.Meeting(
             title=title,
