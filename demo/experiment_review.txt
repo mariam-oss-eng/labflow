@@ -1,0 +1,16 @@
+[Experiment Review — 2026-04-15]
+
+Experiment: dropout sweep on the small transformer baseline.
+Hypothesis: lower attention dropout improves perplexity without hurting accuracy.
+Method: ran 4 configurations (0.0, 0.05, 0.1, 0.2) on the 6M parameter model for 50k steps.
+
+@dan: Results are in. 0.05 dropout was best on perplexity. 0.0 overfit on the eval set.
+
+Decision: we'll go with 0.05 dropout as the new default for the small model.
+
+@eve: Action item: update the training config in the repo by tomorrow.
+@eve: I'll also write a short doc summarizing the sweep.
+
+@dan: Blocker: the eval harness is flaky on multi-node runs. Waiting on the infra fix.
+
+Assumption: the 6M result generalizes to the 60M model. We should verify this in the next run.

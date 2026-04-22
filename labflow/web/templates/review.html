@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block body %}
+<section>
+  <h1>{{ meeting.title }}</h1>
+  <p class="muted">{{ meeting.meeting_type }} · {{ meeting.occurred_at.strftime('%Y-%m-%d %H:%M') }}
+    · {% if meeting.finalized %}finalized{% else %}draft{% endif %}</p>
+  <p>
+    <a class="btn" href="/api/meetings/{{ meeting.id }}/export.md">Export Markdown</a>
+    <a class="btn" href="/api/meetings/{{ meeting.id }}/export.json">Export JSON</a>
+    {% if not meeting.finalized %}
+      <form method="post" action="/api/meetings/{{ meeting.id }}/finalize" style="display:inline">
+        <button class="btn primary">Finalize</button>
+      </form>
+    {% endif %}
+  </p>
+</section>
+
+<section>
+  <h2>Decisions ({{ meeting.decisions|length }})</h2>
+  <ul>{% for d in meeting.decisions %}<li>{{ d.statement }}
+    <span class="muted">conf {{ '%.2f' % d.confidence }}</span></li>{% endfor %}</ul>
+</section>
+
+<section>
+  <h2>Action items ({{ meeting.tasks|length }})</h2>
+  <ul class="tasks">
+    {% for t in meeting.tasks %}
+      <li>
+        <strong>{{ t.title }}</strong>
+        <span class="muted">
+          {{ t.kind }}
+          · {% if t.owner %}@{{ t.owner.handle }}{% else %}unassigned{% endif %}
+          {% if t.due_date %}· due {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
+          · status {{ t.status }}
+          {% if t.uncertainty >= 0.5 %}· <span class="warn">review</span>{% endif %}
+        </span>
+        {% if t.depends_on %}
+          <div class="muted">depends on: {% for d in t.depends_on %}{{ d.title }}{% if not loop.last %}; {% endif %}{% endfor %}</div>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <h2>Experiments ({{ meeting.experiments|length }})</h2>
+  <ul>{% for e in meeting.experiments %}<li>
+    <strong>{{ e.name }}</strong>
+    {% if e.hypothesis %}<div class="muted">H: {{ e.hypothesis }}</div>{% endif %}
+    {% if e.metrics %}<div class="muted">metrics: {{ e.metrics }}</div>{% endif %}
+  </li>{% endfor %}</ul>
+</section>
+
+<section>
+  <h2>Assumptions ({{ meeting.assumptions|length }})</h2>
+  <ul>{% for a in meeting.assumptions %}<li>({{ a.risk }}) {{ a.statement }}</li>{% endfor %}</ul>
+</section>
+
+<section>
+  <h2>Blockers ({{ meeting.blockers|length }})</h2>
+  <ul>{% for b in meeting.blockers %}<li>{{ b.description }}</li>{% endfor %}</ul>
+</section>
+{% endblock %}

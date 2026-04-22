@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="hero">
+  <h1>Turn meetings into <em>shipped work</em>.</h1>
+  <p class="tag">
+    LabFlow is the meeting-to-execution OS for research and engineering teams.
+    Drop in a transcript &mdash; get back structured decisions, experiments,
+    code tasks, owners, deadlines, and verified evidence of completion.
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="/app">Open dashboard</a>
+    <a class="btn" href="/docs">API docs</a>
+  </div>
+</section>
+
+<section class="grid">
+  <article>
+    <h3>Experiment-aware parsing</h3>
+    <p>We understand research vocabulary &mdash; ablations, sweeps, baselines,
+    metrics, and hypotheses &mdash; so research standups become structured
+    plans, not generic to-dos.</p>
+  </article>
+  <article>
+    <h3>Evidence-linked completion</h3>
+    <p>Tasks close when commits, eval runs, docs, or checklists prove they
+    are done. No more &ldquo;done&rdquo; that wasn&rsquo;t.</p>
+  </article>
+  <article>
+    <h3>Decision graph over time</h3>
+    <p>Decisions persist across meetings and supersede each other, giving
+    you a queryable history of <em>why</em> the team chose what it chose.</p>
+  </article>
+  <article>
+    <h3>Human-in-the-loop review</h3>
+    <p>Every extraction is editable. Uncertainty is surfaced, not hidden,
+    so reviewers can fix mistakes in seconds.</p>
+  </article>
+</section>
+
+<section class="who">
+  <h2>Built for technical teams</h2>
+  <ul>
+    <li>ML research groups running many experiments per week</li>
+    <li>Startup engineering teams coordinating across repos</li>
+    <li>Biotech / AI labs running structured experiment reviews</li>
+    <li>Hackathon and prototype-heavy teams</li>
+  </ul>
+</section>
+{% endblock %}

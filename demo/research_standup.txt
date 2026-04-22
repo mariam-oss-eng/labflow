@@ -1,0 +1,18 @@
+[Research Standup — 2026-04-20]
+
+@alice: Quick update — the new tokenizer change landed yesterday. We decided to use SentencePiece over BPE for the multilingual baseline. Rationale was the lower OOV rate on the eval set.
+
+@bob: Cool. I'm blocked on access to the eval cluster, the new quota hasn't propagated yet. Waiting on infra.
+
+@carol: I'll run an ablation on the attention dropout rate by Friday. Hypothesis: dropping from 0.1 to 0.0 improves perplexity on the small model. Metrics: perplexity, accuracy.
+
+@alice: Carol, that ablation depends on the tokenizer change being merged, right?
+@carol: Yes — depends on the SentencePiece tokenizer landing.
+
+@bob: TODO: write up the dataset card for the new corpus by next Tuesday.
+
+@alice: Assumption: the 4-GPU node is available next week. If that's wrong we'll need to reschedule the long training run.
+
+Decision: we'll use accuracy as the primary metric, perplexity as secondary.
+
+@carol: Maybe we should also try a learning-rate sweep, not sure if it's worth the GPU hours.

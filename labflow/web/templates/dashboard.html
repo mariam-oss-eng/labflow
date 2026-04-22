@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block body %}
+<section>
+  <h1>Dashboard</h1>
+  <h2>Upload a transcript</h2>
+  <form method="post" action="/api/meetings/upload" enctype="multipart/form-data">
+    <label>Title <input name="title" required /></label>
+    <label>Type
+      <select name="meeting_type">
+        <option>standup</option>
+        <option>experiment_review</option>
+        <option>kickoff</option>
+        <option>postmortem</option>
+      </select>
+    </label>
+    <label>Transcript <input type="file" name="transcript_file" /></label>
+    <label>Notes <textarea name="notes" rows="3"></textarea></label>
+    <button class="btn primary" type="submit">Extract</button>
+  </form>
+</section>
+
+<section>
+  <h2>Recent meetings</h2>
+  {% if not meetings %}
+    <p>No meetings yet. Upload a transcript above to get started.</p>
+  {% else %}
+    <table>
+      <thead><tr><th>Title</th><th>Type</th><th>When</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for m in meetings %}
+          <tr>
+            <td>{{ m.title }}</td>
+            <td>{{ m.meeting_type }}</td>
+            <td>{{ m.occurred_at.strftime('%Y-%m-%d') }}</td>
+            <td>{% if m.finalized %}finalized{% else %}draft{% endif %}</td>
+            <td><a href="/meetings/{{ m.id }}/review">Review →</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Open tasks</h2>
+  {% if not open_tasks %}
+    <p>Nothing open. 🎉</p>
+  {% else %}
+    <ul class="tasks">
+      {% for t in open_tasks %}
+        <li>
+          <strong>{{ t.title }}</strong>
+          <span class="muted">
+            {% if t.owner %}@{{ t.owner.handle }}{% else %}unassigned{% endif %}
+            · {{ t.kind }}
+            {% if t.due_date %}· due {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
+            {% if t.uncertainty >= 0.5 %}· <span class="warn">needs review</span>{% endif %}
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endblock %}

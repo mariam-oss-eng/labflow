@@ -1,0 +1,18 @@
+[Project Kickoff — 2026-04-10]
+
+We're starting the retrieval-augmented generation prototype.
+
+Decision: we'll use FAISS for the vector index and a small open-weights embedder.
+Rationale: simple to deploy, fast iteration.
+
+@frank: I'll set up the FAISS index by next Friday.
+@grace: Action: implement the retrieval API endpoint. Depends on the FAISS index being ready.
+@henry: TODO: collect a 10k-document evaluation corpus by end of month.
+
+Experiment: baseline RAG vs no-RAG on QA accuracy.
+Hypothesis: RAG improves answer accuracy by at least 10 points on the internal QA set.
+Metrics: accuracy, latency.
+
+Assumption: the open-weights embedder is good enough for technical text. Risk is medium.
+
+@frank: Blocked on getting the documents in a normalized format. Waiting on data team.

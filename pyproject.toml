@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "labflow"
+version = "0.1.0"
+description = "LabFlow — meeting-to-execution OS for research and technical teams"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { file = "LICENSE" }
+dependencies = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.27,<1.0",
+    "sqlalchemy>=2.0,<3.0",
+    "pydantic>=2.5,<3.0",
+    "jinja2>=3.1,<4.0",
+    "python-multipart>=0.0.22",
+    "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+include = ["labflow*"]
+exclude = ["tests*", "demo*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
