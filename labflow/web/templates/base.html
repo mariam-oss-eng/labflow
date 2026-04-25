@@ -1,25 +1,53 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{{ title }}</title>
-<link rel="stylesheet" href="/static/style.css" />
+<title>{{ title }} · LabFlow</title>
+<!--
+  Tailwind via CDN (Play CDN) + HTMX from unpkg. Both are MIT-licensed,
+  CSP-friendly, and zero-build — keeping with LabFlow's "no node, no
+  webpack" philosophy. Mermaid is loaded lazily on the review page.
+-->
+<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js" defer></script>
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🧪</text></svg>" />
+<style>
+  /* Tailwind plays best with class-based utilities. Custom keyframes
+     here keep the toast+pulse animations away from the JS bundle. */
+  @keyframes flow-pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+  .live-dot { animation: flow-pulse 1.6s ease-in-out infinite; }
+</style>
 </head>
-<body>
-<header class="topbar">
-  <a class="brand" href="/">LabFlow</a>
-  <nav>
-    <a href="/app">Dashboard</a>
-    <a href="/api/digest/weekly">Weekly digest</a>
-    <a href="/docs">API</a>
-  </nav>
+<body class="h-full bg-slate-50 text-slate-900 antialiased">
+<header class="border-b border-slate-200 bg-white/80 backdrop-blur sticky top-0 z-10">
+  <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-6">
+    <a href="/" class="font-semibold tracking-tight text-slate-900 flex items-center gap-2">
+      <span class="text-xl">🧪</span><span>LabFlow</span>
+      <span class="text-[10px] uppercase tracking-widest text-slate-400">v{{ version|default('0.5') }}</span>
+    </a>
+    <nav class="flex gap-4 text-sm text-slate-600">
+      <a href="/app" class="hover:text-slate-900">Dashboard</a>
+      <a href="/api/digest/weekly" class="hover:text-slate-900">Weekly digest</a>
+      <a href="/api/graph/decisions.mermaid" class="hover:text-slate-900">Decision graph</a>
+      <a href="/docs" class="hover:text-slate-900">API</a>
+    </nav>
+    <div class="ml-auto flex items-center gap-2 text-xs text-slate-500"
+         hx-ext="sse" sse-connect="/api/stream">
+      <span class="live-dot inline-block h-2 w-2 rounded-full bg-emerald-500"></span>
+      <span sse-swap="hello,meeting.finalized,task.closed,evidence.verified"
+            hx-swap="innerHTML">live</span>
+    </div>
+  </div>
 </header>
-<main>
+<main class="max-w-6xl mx-auto px-6 py-8 space-y-10">
   {% block body %}{% endblock %}
 </main>
-<footer>
-  <span>LabFlow · meeting → execution OS for technical teams</span>
+<footer class="max-w-6xl mx-auto px-6 py-12 text-xs text-slate-400">
+  LabFlow · meeting → execution OS for technical teams ·
+  <a class="underline hover:text-slate-600" href="https://github.com/mariam-oss-eng/labflow">GitHub</a>
 </footer>
 </body>
 </html>
+

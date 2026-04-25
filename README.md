@@ -1,178 +1,196 @@
-# LabFlow
+<div align="center">
 
-**Meeting-to-execution operating system for research and technical teams.**
+# 🧪 LabFlow
 
-LabFlow turns calls, papers, and planning docs into structured experiments,
-tickets, code tasks, owners, deadlines, and verified evidence of completion.
-It is built for ML research groups, startup engineering teams, biotech / AI
-labs, and prototype-heavy hackathon teams — not for generic SMB note-taking.
+**The meeting → execution operating system for research and technical teams.**
 
-> Most meeting assistants stop at summaries. LabFlow ships an **execution
-> structure plus verification layer** on top: typed tasks, dependency graph,
-> evidence-driven completion, and a long-lived decision graph.
+[![Tests](https://img.shields.io/badge/tests-128%20passing-brightgreen)](#testing)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.5.0-6366f1)](CHANGELOG.md)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com)
+[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9c27b0)](docs/)
+
+LabFlow turns transcripts, calls, and planning docs into a **typed, queryable
+graph** of decisions, action items, experiments, owners, deadlines, and
+evidence of completion — with an audit log, webhooks, and live search.
+Built for ML research groups, AI/biotech labs, and prototype-heavy startup
+teams. Not another notes app.
+
+[Quickstart](#quickstart) · [Architecture](#architecture) · [Feature matrix](#feature-matrix) · [Documentation](docs/) · [Changelog](CHANGELOG.md)
+
+</div>
 
 ---
+
+## Why LabFlow
+
+Most meeting assistants stop at a Markdown summary. **LabFlow ships an
+execution structure plus verification layer on top:**
+
+* **Typed extraction** — decisions, tasks, experiments, assumptions, and
+  blockers are separate first-class entities, each with confidence and a
+  source span back to the transcript.
+* **Decision graph** — the same statement across two meetings creates a
+  supersession edge automatically; the team gets a long-lived
+  decision-history they can query and render as a Mermaid diagram.
+* **Evidence-driven completion** — tasks are closed by attaching commits,
+  PRs, datasets, or artifacts. A built-in verifier scores the match;
+  inbound GitHub webhooks attach evidence on their own.
+* **Hybrid search** — keyword TF + cosine similarity over stored
+  embeddings + recency, with explainable per-result `score_components`.
+* **Live everything** — Server-Sent Events stream finalize/close/verify
+  events to the dashboard in real time.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Client
+      U[Browser / CLI / API]
+    end
+    subgraph LabFlow API
+      MW1[RateLimit] --> MW2[Idempotency] --> R[Routes]
+      R --> EX[Extraction]
+      R --> SR[Hybrid search]
+      R --> GR[Decision graph]
+      R --> RBAC[RBAC]
+    end
+    subgraph Persistence
+      DB[(Postgres / SQLite)]
+      EMB[(embeddings)]
+      AUD[(audit_events)]
+    end
+    subgraph Async
+      JQ[Job queue] --> WK[Worker]
+      WH[Webhook deliverer] --> SLK[Slack]
+      WH --> GH[GitHub]
+    end
+    U --> MW1
+    R --> DB
+    EX --> EMB
+    R --> JQ
+    R --> WH
+    R -. SSE .-> U
+```
+
+Single-process by default (FastAPI + SQLAlchemy + Alembic + an
+in-process job worker). Scale horizontally by pointing at Postgres and
+running multiple replicas behind any HTTP load balancer.
 
 ## Quickstart
 
 ### Local (SQLite)
 
 ```bash
-pip install -r requirements.txt
-alembic upgrade head        # create tables (or use init_db() in dev)
-uvicorn labflow.main:app --reload
+git clone https://github.com/mariam-oss-eng/labflow.git
+cd labflow
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+alembic upgrade head
+labflow serve  # → http://localhost:8000/app
 ```
 
-Open <http://localhost:8000> for the landing page, <http://localhost:8000/app>
-for the dashboard, and <http://localhost:8000/docs> for the auto-generated
-OpenAPI explorer.
+Open the dashboard, paste a transcript, hit **Extract →**.
 
-### Docker (Postgres + API)
+### Docker
 
 ```bash
-cp .env.example .env        # then edit LABFLOW_BOOTSTRAP_API_KEY
 docker compose up --build
 ```
 
-A SQLite database is created in the working directory by default. Point
-`LABFLOW_DATABASE_URL` at Postgres for production
-(e.g. `postgresql+psycopg://user:pass@host/labflow`). All settings are
-documented in [`.env.example`](.env.example).
+Boots the API + a worker against a Postgres container.
 
-## Authentication
-
-LabFlow ships with API-key authentication and per-team isolation. Every
-row carries a `team_id` and is invisible to other teams.
-
-| Mode | When | How |
-|---|---|---|
-| **Single-team** (default) | Local dev, demos | `LABFLOW_AUTH_ENABLED=false` — every request resolves to the bootstrap team |
-| **Multi-tenant** (production) | Always | `LABFLOW_AUTH_ENABLED=true` — send `Authorization: Bearer lfk_…` or `X-LabFlow-Key: lfk_…` on every API call |
-
-Mint keys via the CLI:
+### One-shot CLI
 
 ```bash
-labflow team create acme
-labflow keys create acme --name "ci-bot"   # prints plaintext exactly once
-labflow keys revoke <key-id>
+echo "@alice will retrain the model. We decided to adopt SentencePiece." \
+  | labflow ingest --title "Standup"
+labflow digest --weekly
 ```
 
-API keys are stored as SHA-256 hashes — the plaintext is shown only at
-creation time.
+## Feature matrix
 
-## Try it on the demo transcripts
+| Capability | v0.1 | v0.2 | v0.3 | **v0.4** | **v0.5** |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multi-tenancy + API keys | — | ✅ | ✅ | ✅ | ✅ |
+| Postgres + Alembic migrations | — | ✅ | ✅ | ✅ | ✅ |
+| Background job queue + worker | — | — | ✅ | ✅ | ✅ |
+| Append-only audit log | — | — | ✅ | ✅ | ✅ |
+| Outbound webhooks (HMAC-signed) | — | — | ✅ | ✅ | ✅ |
+| Inbound GitHub evidence webhook | — | — | ✅ | ✅ | ✅ |
+| Prometheus metrics | — | — | ✅ | ✅ | ✅ |
+| Pluggable embeddings | — | — | — | ✅ | ✅ |
+| **Hybrid keyword + semantic search** | — | — | — | ✅ | ✅ |
+| Decision graph + Mermaid renderer | — | — | — | ✅ | ✅ |
+| Per-team rate limiting | — | — | — | ✅ | ✅ |
+| Idempotency-Key on writes | — | — | — | ✅ | ✅ |
+| Slack notifier | — | — | — | ✅ | ✅ |
+| **Role-based access control** | — | — | — | — | ✅ |
+| Encryption at rest (Fernet) | — | — | — | — | ✅ |
+| Server-Sent Events live stream | — | — | — | — | ✅ |
+| Plugin loader (entry-point + dotted) | — | — | — | — | ✅ |
+| GDPR export / erase + retention sweep | — | — | — | — | ✅ |
+
+## Configuration
+
+Every setting reads from environment variables (12-factor):
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `LABFLOW_DATABASE_URL` | `sqlite:///./labflow.db` | Postgres URL recommended in prod |
+| `LABFLOW_AUTH_ENABLED` | `false` | Multi-tenant API-key auth |
+| `LABFLOW_RATE_LIMIT_PER_MINUTE` | `600` | `0` disables |
+| `LABFLOW_RATE_LIMIT_BURST` | `60` | Token bucket capacity |
+| `LABFLOW_IDEMPOTENCY_TTL_SECONDS` | `86400` | Cache window for `Idempotency-Key` |
+| `LABFLOW_EMBEDDING_DIM` | `256` | Hash embedder dimensionality |
+| `LABFLOW_EMBEDDING_CALLABLE` | _(unset)_ | `pkg.mod:fn` for real embeddings |
+| `LABFLOW_SEARCH_ALPHA` | `0.5` | Hybrid blend (0=lex, 1=semantic) |
+| `LABFLOW_DATA_KEY` | _(unset)_ | Fernet key — enables encryption at rest |
+| `LABFLOW_PLUGINS` | _(unset)_ | Comma-separated `pkg.mod:obj` plugin specs |
+| `LABFLOW_WEBHOOK_SIGNING_SECRET` | _(generated)_ | HMAC-SHA256 secret for outbound hooks |
+
+## API highlights
+
+| Method | Path | Description |
+| :-- | --- | --- |
+| `POST` | `/api/meetings` | Create + auto-extract a meeting (supports `Idempotency-Key`) |
+| `POST` | `/api/meetings/{id}/finalize` | Lock a meeting; emits `meeting.finalized` |
+| `POST` | `/api/meetings/{id}/extract:async` | Enqueue extraction, returns `202` + job id |
+| `GET`  | `/api/search?q=&alpha=` | Hybrid search w/ explainable score components |
+| `GET`  | `/api/graph/decisions` | Decision graph nodes/edges as JSON |
+| `GET`  | `/api/graph/decisions.mermaid` | Same graph as Mermaid `flowchart` |
+| `GET`  | `/api/stream` | Server-Sent Events stream for the team |
+| `GET`  | `/api/me` | Caller's identity, role, and posture |
+| `GET`  | `/api/admin/export` | GDPR Article 15 export of every team row |
+| `DELETE` | `/api/admin/erase` | GDPR Article 17 hard-delete (admin only) |
+| `GET`  | `/healthz`, `/readyz`, `/metrics` | Liveness, readiness, Prometheus |
+
+Full schema: visit `/docs` (Swagger UI) or `/openapi.json`.
+
+## Testing
 
 ```bash
-curl -F "title=Research standup" -F "meeting_type=standup" \
-     -F "transcript_file=@demo/research_standup.txt" \
-     http://localhost:8000/api/meetings/upload
+pytest          # 128 tests, ~6s on a laptop
+pytest -k v04   # subset
 ```
 
-Then visit `/meetings/{id}/review` to inspect the structured output, and
-`GET /api/meetings/{id}/export.md` for a clean Markdown export.
+We run model logic, API contract, RBAC, encryption round-trip, idempotency
+replay, rate-limit headers, hybrid search ranking, decision graph rendering,
+plugin loading, retention sweep, and Slack payload tests.
 
-## What it extracts
+## Documentation
 
-| Entity | What we capture |
-|---|---|
-| **Decision** | statement, rationale, confidence, supersession across meetings |
-| **Task** | title, owner, deadline, kind (task / code / experiment / review), uncertainty, dependencies |
-| **Experiment** | name, hypothesis, method, metrics, dataset, owner |
-| **Assumption** | statement, risk level (low / medium / high) |
-| **Blocker** | description, optional blocked task |
-| **Evidence** | commit / eval / doc / checklist / link, scored against the task |
+The full documentation site is built with [MkDocs Material](docs/mkdocs.yml)
+and published to GitHub Pages on every push to `main`.
 
-The full schema lives in [`labflow/schemas.py`](labflow/schemas.py) and
-[`labflow/models.py`](labflow/models.py).
-
-## How extraction works
-
-The default extractor is **deterministic and rule-based**, which means tests
-are reproducible and the system runs offline. The pipeline is in
-`labflow/extraction/`:
-
-- `dates.py` — relative + absolute deadline parsing
-- `owners.py` — `@handle`, `[Name]`, and `Name will…` detection
-- `uncertainty.py` — hedging-based 0..1 score and assumption classification
-- `deps.py` — explicit + heuristic task dependency linking
-- `rules.py` — decision / task / experiment / assumption / blocker rules
-- `pipeline.py` — orchestration, validates output against `ExtractionResult`
-
-To plug an LLM backend, set `LABFLOW_EXTRACTION_BACKEND=llm` and
-`LABFLOW_LLM_CALLABLE=mypkg.module:complete` to a callable that returns
-JSON conforming to `ExtractionResult`. The strict Pydantic schema
-(`extra="forbid"`) will catch hallucinations or schema drift early; on
-any error (network failure, bad JSON, validation error) the LLM backend
-falls back to the rules pipeline so ingestion never breaks.
-
-## Verification
-
-`POST /api/evidence` attaches an evidence item to a task. The verifier
-combines token overlap (evidence vs. task title), kind-specific bonuses,
-and owner-handle matches to produce a 0..1 score. Crossing the threshold
-marks the evidence verified and the task `done`. Below threshold the
-evidence is still stored — for review, not silent dismissal.
-
-## Weekly digest
-
-`GET /api/digest/weekly` returns a Markdown brief covering the last 7 days:
-meetings, new decisions, closed tasks, overdue tasks, high-uncertainty work
-that needs review, open blockers, and high-risk assumptions.
-
-## Tests
-
-```bash
-pip install -r requirements.txt pytest httpx
-pytest
-```
-
-Coverage:
-
-- **Unit:** schema validation, date parsing, owner assignment, uncertainty
-  classification, dependency linking
-- **Integration:** upload → extract → review → finalize → export → digest;
-  evidence-driven task closure; multi-meeting decision continuity; HTML
-  pages render
-
-## Repo layout
-
-```
-labflow/
-├── labflow/                # application package
-│   ├── extraction/         # rule-based extractors + pipeline
-│   ├── web/                # Jinja templates + static assets
-│   ├── models.py           # SQLAlchemy ORM
-│   ├── schemas.py          # Pydantic I/O + extraction schema
-│   ├── services.py         # persistence / extraction → DB
-│   ├── verification.py     # evidence scoring + auto-close
-│   ├── digest.py           # weekly digest generation
-│   ├── exports.py          # Markdown / JSON exports
-│   └── main.py             # FastAPI app + routes
-├── demo/                   # sample transcripts (research, kickoff, exp review)
-├── docs/                   # product spec, pricing memo, onboarding flow
-└── tests/                  # unit + integration tests
-```
-
-## Roadmap
-
-- **0.1 (MVP):** transcript upload, extraction, review, export, weekly
-  digest, evidence ingestion + auto-completion.
-- **0.2 (production foundations):** API-key auth + per-team isolation,
-  typed config, structured logs, error envelope, pagination, pluggable
-  extractor backends, Alembic migrations, Docker, CI.
-- **0.3 (production scale):** background job queue, async extraction,
-  audit log, outbound webhooks, GitHub inbound webhook, search,
-  Prometheus metrics, CLI, operations docs.
-
-See [`CHANGELOG.md`](CHANGELOG.md) for the detailed change log and
-[`docs/operations.md`](docs/operations.md) for production deployment
-notes.
-
-See [`docs/product_spec.md`](docs/product_spec.md),
-[`docs/pricing.md`](docs/pricing.md), and
-[`docs/onboarding.md`](docs/onboarding.md) for the product brief, pricing,
-and pilot flow.
+* [Operations runbook](docs/operations.md)
+* [Onboarding guide](docs/onboarding.md)
+* [Product spec](docs/product_spec.md)
+* [Architecture decision records](docs/adr/)
+* [Contributing](CONTRIBUTING.md)
 
 ## License
 
-See [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).

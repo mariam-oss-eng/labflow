@@ -318,6 +318,10 @@ def test_me_endpoint_returns_role(app_client):
 def test_slack_payload_shape():
     from labflow.notifiers.slack import is_slack_url, to_slack_payload
     assert is_slack_url("https://hooks.slack.com/services/T/B/X")
+    # Attacker-controlled path must NOT be treated as Slack.
+    assert not is_slack_url("https://evil.com/hooks.slack.com.fake")
+    assert not is_slack_url("https://hooks.slack.com.evil.com/x")
+    assert not is_slack_url("")
     body = json.loads(to_slack_payload("meeting.finalized",
                                        {"meeting_id": 1, "title": "t"}))
     assert "blocks" in body

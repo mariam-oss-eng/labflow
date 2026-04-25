@@ -3,6 +3,60 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-04-25
+### Added — Enterprise & polish
+- **Role-based access control.** New `memberships` table maps API keys to a
+  role (`admin` / `member` / `viewer`); destructive endpoints gated behind
+  `require_role("admin")`. `GET /api/me` returns the caller's identity.
+- **Encryption at rest** for `meetings.transcript` and `meetings.notes` via
+  a Fernet-backed `EncryptedText` SQLAlchemy `TypeDecorator`. Set
+  `LABFLOW_DATA_KEY` (urlsafe base64) to enable; `MultiFernet`-style key
+  rotation is supported via comma-separated keys.
+- **Server-Sent Events** at `GET /api/stream`. The dashboard now shows a
+  live "live" indicator with pushed `meeting.finalized`, `task.closed`,
+  `evidence.verified` events from the in-process `sse.Hub`.
+- **Plugin loader.** Custom extractors and event handlers can be installed
+  via standard entry-points (`labflow.plugins`) or the `LABFLOW_PLUGINS`
+  env. A `PluginRegistry` is passed to each plugin's `register(api)` hook.
+- **Data retention + GDPR-style export/erase.** New `retention.sweep`
+  drops audit / webhook / idempotency / completed-job rows past their
+  policy horizon. New admin endpoints: `GET /api/admin/export`,
+  `DELETE /api/admin/erase`, `POST /api/admin/retention/sweep`.
+
+### Changed
+- OpenAPI bumped to **0.5.0**, every route tagged into one of
+  `meetings / tasks / evidence / search / graph / jobs / admin / system`.
+
+## [0.4.0] — 2026-04-25
+### Added — Intelligence & integration
+- **Pluggable embeddings** (`labflow.embeddings`): deterministic offline
+  `HashEmbedder` default, `CallableEmbedder` hook for any
+  `LABFLOW_EMBEDDING_CALLABLE=mod:fn`. Vectors persisted in a new
+  `embeddings` table and refreshed eagerly on every extraction write.
+- **Hybrid search.** `/api/search` now blends lexical TF (with field
+  boosts), cosine over stored vectors, and a recency bias. The blend is
+  controlled by `alpha` (query param or `LABFLOW_SEARCH_ALPHA`); each
+  result returns a `score_components` block for explainability.
+- **Decision graph.** `GET /api/graph/decisions` returns typed nodes/edges
+  for the team-wide supersession graph; `.mermaid` returns a ready-to-paste
+  Mermaid `flowchart` rendered server-side. The review page renders it
+  inline using the Mermaid CDN script.
+- **Per-team token-bucket rate limiting** middleware
+  (`LABFLOW_RATE_LIMIT_PER_MINUTE` / `_BURST`) with `Retry-After` and
+  `X-RateLimit-*` headers. Health/metrics paths are exempt.
+- **Idempotency-Key** support on `POST/PUT/PATCH` (raw ASGI middleware,
+  Stripe-style contract; cached records live in a new `idempotency_records`
+  table with configurable TTL).
+- **Slack notifier.** Existing webhook subscriptions whose URL points at
+  `hooks.slack.com` get reshaped into Block Kit payloads automatically —
+  no separate integration to wire up.
+
+### Changed
+- `extract.persist` writes embeddings inline so search remains consistent.
+- Modernized web UI (Tailwind via Play CDN + HTMX, no build step) with a
+  live SSE indicator, Mermaid-rendered decision graph, and an HTMX-powered
+  search box that hits `/app/search` for partial-page updates.
+
 ## [0.3.0] — 2026-04-25
 ### Added
 - **Background job queue** (in-process worker, `Job` table) and asynchronous

@@ -1,63 +1,123 @@
 {% extends "base.html" %}
 {% block body %}
-<section>
-  <h1>{{ meeting.title }}</h1>
-  <p class="muted">{{ meeting.meeting_type }} · {{ meeting.occurred_at.strftime('%Y-%m-%d %H:%M') }}
-    · {% if meeting.finalized %}finalized{% else %}draft{% endif %}</p>
-  <p>
-    <a class="btn" href="/api/meetings/{{ meeting.id }}/export.md">Export Markdown</a>
-    <a class="btn" href="/api/meetings/{{ meeting.id }}/export.json">Export JSON</a>
-    {% if not meeting.finalized %}
-      <form method="post" action="/api/meetings/{{ meeting.id }}/finalize" style="display:inline">
-        <button class="btn primary">Finalize</button>
-      </form>
-    {% endif %}
-  </p>
-</section>
-
-<section>
-  <h2>Decisions ({{ meeting.decisions|length }})</h2>
-  <ul>{% for d in meeting.decisions %}<li>{{ d.statement }}
-    <span class="muted">conf {{ '%.2f' % d.confidence }}</span></li>{% endfor %}</ul>
-</section>
-
-<section>
-  <h2>Action items ({{ meeting.tasks|length }})</h2>
-  <ul class="tasks">
-    {% for t in meeting.tasks %}
-      <li>
-        <strong>{{ t.title }}</strong>
-        <span class="muted">
-          {{ t.kind }}
-          · {% if t.owner %}@{{ t.owner.handle }}{% else %}unassigned{% endif %}
-          {% if t.due_date %}· due {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
-          · status {{ t.status }}
-          {% if t.uncertainty >= 0.5 %}· <span class="warn">review</span>{% endif %}
-        </span>
-        {% if t.depends_on %}
-          <div class="muted">depends on: {% for d in t.depends_on %}{{ d.title }}{% if not loop.last %}; {% endif %}{% endfor %}</div>
+<section class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+  <div class="flex items-start gap-4">
+    <div class="flex-1">
+      <h1 class="text-2xl font-semibold tracking-tight">{{ meeting.title }}</h1>
+      <p class="mt-1 text-sm text-slate-500">
+        {{ meeting.meeting_type }} ·
+        {{ meeting.occurred_at.strftime('%Y-%m-%d %H:%M') }} ·
+        {% if meeting.finalized %}
+          <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">finalized</span>
+        {% else %}
+          <span class="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">draft</span>
         {% endif %}
-      </li>
-    {% endfor %}
-  </ul>
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a class="rounded-md ring-1 ring-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+         href="/api/meetings/{{ meeting.id }}/export.md">Markdown</a>
+      <a class="rounded-md ring-1 ring-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+         href="/api/meetings/{{ meeting.id }}/export.json">JSON</a>
+      {% if not meeting.finalized %}
+        <form method="post" action="/api/meetings/{{ meeting.id }}/finalize" class="inline">
+          <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700">Finalize</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
 </section>
 
-<section>
-  <h2>Experiments ({{ meeting.experiments|length }})</h2>
-  <ul>{% for e in meeting.experiments %}<li>
-    <strong>{{ e.name }}</strong>
-    {% if e.hypothesis %}<div class="muted">H: {{ e.hypothesis }}</div>{% endif %}
-    {% if e.metrics %}<div class="muted">metrics: {{ e.metrics }}</div>{% endif %}
-  </li>{% endfor %}</ul>
+<section class="grid lg:grid-cols-2 gap-6">
+  <div class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-base font-semibold mb-3">Decisions <span class="text-slate-400 font-normal">({{ meeting.decisions|length }})</span></h2>
+    <ul class="divide-y divide-slate-100">
+      {% for d in meeting.decisions %}
+        <li class="py-3 text-sm">
+          <div class="font-medium">{{ d.statement }}</div>
+          {% if d.rationale %}<div class="text-slate-500 mt-1">{{ d.rationale }}</div>{% endif %}
+          <div class="mt-1 text-xs text-slate-400">confidence {{ '%.2f' % d.confidence }}
+            {% if d.superseded_by_id %}· <span class="text-rose-500">superseded</span>{% endif %}</div>
+        </li>
+      {% else %}
+        <li class="py-3 text-sm text-slate-400">No decisions detected.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-base font-semibold mb-3">Action items <span class="text-slate-400 font-normal">({{ meeting.tasks|length }})</span></h2>
+    <ul class="divide-y divide-slate-100">
+      {% for t in meeting.tasks %}
+        <li class="py-3 text-sm">
+          <div class="flex items-start gap-2">
+            <span class="mt-0.5 inline-flex h-5 items-center rounded bg-slate-100 px-1.5 text-[10px] font-medium uppercase text-slate-600">{{ t.kind }}</span>
+            <div class="flex-1">
+              <div class="font-medium">{{ t.title }}</div>
+              <div class="text-xs text-slate-500 mt-1">
+                {% if t.owner %}@{{ t.owner.handle }}{% else %}<span class="text-slate-400">unassigned</span>{% endif %}
+                {% if t.due_date %} · due {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
+                · status {{ t.status }}
+                {% if t.uncertainty >= 0.5 %}· <span class="text-amber-600">review</span>{% endif %}
+              </div>
+              {% if t.depends_on %}
+                <div class="mt-1 text-xs text-slate-400">depends on:
+                  {% for d in t.depends_on %}{{ d.title }}{% if not loop.last %}; {% endif %}{% endfor %}
+                </div>
+              {% endif %}
+            </div>
+          </div>
+        </li>
+      {% else %}
+        <li class="py-3 text-sm text-slate-400">No action items detected.</li>
+      {% endfor %}
+    </ul>
+  </div>
 </section>
 
-<section>
-  <h2>Assumptions ({{ meeting.assumptions|length }})</h2>
-  <ul>{% for a in meeting.assumptions %}<li>({{ a.risk }}) {{ a.statement }}</li>{% endfor %}</ul>
+<section class="grid lg:grid-cols-3 gap-6">
+  <div class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-base font-semibold mb-3">Experiments <span class="text-slate-400 font-normal">({{ meeting.experiments|length }})</span></h2>
+    <ul class="space-y-3 text-sm">
+      {% for e in meeting.experiments %}
+        <li>
+          <div class="font-medium">{{ e.name }}</div>
+          {% if e.hypothesis %}<div class="text-slate-500 text-xs mt-0.5">H: {{ e.hypothesis }}</div>{% endif %}
+          {% if e.metrics %}<div class="text-slate-500 text-xs mt-0.5">metrics: {{ e.metrics }}</div>{% endif %}
+        </li>
+      {% else %}<li class="text-slate-400">None.</li>{% endfor %}
+    </ul>
+  </div>
+  <div class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-base font-semibold mb-3">Assumptions <span class="text-slate-400 font-normal">({{ meeting.assumptions|length }})</span></h2>
+    <ul class="space-y-2 text-sm">
+      {% for a in meeting.assumptions %}
+        <li>
+          <span class="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-600">{{ a.risk }}</span>
+          {{ a.statement }}
+        </li>
+      {% else %}<li class="text-slate-400">None.</li>{% endfor %}
+    </ul>
+  </div>
+  <div class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-base font-semibold mb-3">Blockers <span class="text-slate-400 font-normal">({{ meeting.blockers|length }})</span></h2>
+    <ul class="space-y-2 text-sm">
+      {% for b in meeting.blockers %}
+        <li>{{ b.description }}</li>
+      {% else %}<li class="text-slate-400">None.</li>{% endfor %}
+    </ul>
+  </div>
 </section>
 
-<section>
-  <h2>Blockers ({{ meeting.blockers|length }})</h2>
-  <ul>{% for b in meeting.blockers %}<li>{{ b.description }}</li>{% endfor %}</ul>
+<section class="bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+  <h2 class="text-base font-semibold mb-3">Decision graph</h2>
+  <p class="text-xs text-slate-500 mb-3">Boxes are decisions; dashed nodes have been superseded by a later one. Live data, rendered server-side as Mermaid.</p>
+  <div class="rounded-md bg-slate-50 p-4 overflow-auto" id="mermaid-host">
+    <pre class="mermaid">{{ mermaid }}</pre>
+  </div>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+  </script>
 </section>
 {% endblock %}

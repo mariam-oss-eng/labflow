@@ -14,10 +14,23 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 
 def is_slack_url(url: str) -> bool:
-    return "hooks.slack.com" in (url or "")
+    """True iff ``url`` is a Slack incoming-webhook URL.
+
+    Uses ``urlparse`` to compare the *hostname* — a substring check
+    such as ``"hooks.slack.com" in url`` would be fooled by attacker-
+    controlled paths like ``https://evil.com/hooks.slack.com.fake``.
+    """
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "hooks.slack.com" or host.endswith(".hooks.slack.com")
 
 
 def to_slack_payload(event: str, data: dict[str, Any]) -> str:

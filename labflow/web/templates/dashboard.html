@@ -1,64 +1,103 @@
 {% extends "base.html" %}
 {% block body %}
-<section>
-  <h1>Dashboard</h1>
-  <h2>Upload a transcript</h2>
-  <form method="post" action="/api/meetings/upload" enctype="multipart/form-data">
-    <label>Title <input name="title" required /></label>
-    <label>Type
-      <select name="meeting_type">
-        <option>standup</option>
-        <option>experiment_review</option>
-        <option>kickoff</option>
-        <option>postmortem</option>
-      </select>
-    </label>
-    <label>Transcript <input type="file" name="transcript_file" /></label>
-    <label>Notes <textarea name="notes" rows="3"></textarea></label>
-    <button class="btn primary" type="submit">Extract</button>
-  </form>
+<section class="grid lg:grid-cols-5 gap-8">
+  <!-- Upload card -->
+  <div class="lg:col-span-2 bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h1 class="text-lg font-semibold mb-1">Upload a transcript</h1>
+    <p class="text-sm text-slate-500 mb-4">
+      LabFlow extracts decisions, action items, experiments, assumptions
+      and blockers — and links them across meetings.
+    </p>
+    <form method="post" action="/api/meetings/upload" enctype="multipart/form-data" class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Title</label>
+        <input name="title" required
+               class="block w-full rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+        <select name="meeting_type"
+                class="block w-full rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option>standup</option>
+          <option>experiment_review</option>
+          <option>kickoff</option>
+          <option>postmortem</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Transcript file</label>
+        <input type="file" name="transcript_file"
+               class="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0
+                      file:bg-indigo-50 file:px-3 file:py-2 file:text-indigo-700
+                      hover:file:bg-indigo-100" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 mb-1">…or paste notes</label>
+        <textarea name="notes" rows="4"
+                  class="block w-full rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+                  placeholder="@alice will write the design doc by Friday."></textarea>
+      </div>
+      <button type="submit"
+              class="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700">
+        Extract →
+      </button>
+    </form>
+  </div>
+
+  <!-- Search card -->
+  <div class="lg:col-span-3 bg-white rounded-xl ring-1 ring-slate-200 p-6 shadow-sm">
+    <h2 class="text-lg font-semibold mb-1">Search the graph</h2>
+    <p class="text-sm text-slate-500 mb-4">Hybrid lexical + semantic ranking across decisions and tasks.</p>
+    <form hx-get="/app/search" hx-target="#search-results" hx-trigger="submit, keyup changed delay:300ms from:input[name=q]"
+          class="flex gap-2">
+      <input name="q" type="search" placeholder="e.g. tokenizer, sentencepiece, retrain"
+             class="flex-1 rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500" />
+      <button class="rounded-md bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-700">Search</button>
+    </form>
+    <div id="search-results" class="mt-4 text-sm"></div>
+  </div>
 </section>
 
 <section>
-  <h2>Recent meetings</h2>
+  <h2 class="text-lg font-semibold mb-3">Recent meetings</h2>
   {% if not meetings %}
-    <p>No meetings yet. Upload a transcript above to get started.</p>
+    <div class="rounded-lg border border-dashed border-slate-300 p-8 text-center text-slate-500">
+      No meetings yet. Upload a transcript above to get started.
+    </div>
   {% else %}
-    <table>
-      <thead><tr><th>Title</th><th>Type</th><th>When</th><th>Status</th><th></th></tr></thead>
-      <tbody>
-        {% for m in meetings %}
+    <div class="bg-white rounded-xl ring-1 ring-slate-200 overflow-hidden shadow-sm">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
           <tr>
-            <td>{{ m.title }}</td>
-            <td>{{ m.meeting_type }}</td>
-            <td>{{ m.occurred_at.strftime('%Y-%m-%d') }}</td>
-            <td>{% if m.finalized %}finalized{% else %}draft{% endif %}</td>
-            <td><a href="/meetings/{{ m.id }}/review">Review →</a></td>
+            <th class="px-4 py-3">Title</th>
+            <th class="px-4 py-3">Type</th>
+            <th class="px-4 py-3">When</th>
+            <th class="px-4 py-3">Status</th>
+            <th class="px-4 py-3"></th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
-</section>
-
-<section>
-  <h2>Open tasks</h2>
-  {% if not open_tasks %}
-    <p>Nothing open. 🎉</p>
-  {% else %}
-    <ul class="tasks">
-      {% for t in open_tasks %}
-        <li>
-          <strong>{{ t.title }}</strong>
-          <span class="muted">
-            {% if t.owner %}@{{ t.owner.handle }}{% else %}unassigned{% endif %}
-            · {{ t.kind }}
-            {% if t.due_date %}· due {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
-            {% if t.uncertainty >= 0.5 %}· <span class="warn">needs review</span>{% endif %}
-          </span>
-        </li>
-      {% endfor %}
-    </ul>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for m in meetings %}
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-3 font-medium text-slate-900">{{ m.title }}</td>
+            <td class="px-4 py-3 text-slate-600">{{ m.meeting_type }}</td>
+            <td class="px-4 py-3 text-slate-600">{{ m.occurred_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td class="px-4 py-3">
+              {% if m.finalized %}
+                <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">finalized</span>
+              {% else %}
+                <span class="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">draft</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 text-right">
+              <a href="/meetings/{{ m.id }}/review"
+                 class="inline-flex items-center text-indigo-600 hover:text-indigo-800">Review →</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% endif %}
 </section>
 {% endblock %}

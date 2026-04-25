@@ -131,7 +131,7 @@ def deliver_pending(
                 body_str = d.payload
             body = body_str.encode("utf-8")
             headers = {"Content-Type": "application/json",
-                       "User-Agent": "LabFlow/0.4"}
+                       "User-Agent": "LabFlow/0.5"}
         else:
             body = d.payload.encode("utf-8")
             signature = sign(body, sub.secret or get_settings().webhook_signing_secret)
@@ -139,7 +139,7 @@ def deliver_pending(
                 "Content-Type": "application/json",
                 "X-LabFlow-Event": d.event,
                 "X-LabFlow-Signature-256": signature,
-                "User-Agent": "LabFlow/0.4",
+                "User-Agent": "LabFlow/0.5",
             }
         try:
             status, resp_body = poster(sub.url, body, headers)

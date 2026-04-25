@@ -61,6 +61,13 @@ TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 log = logging.getLogger("labflow.api")
 
 
+def _html_escape(text: str) -> str:
+    """Minimal HTML escape for HTMX fragment helpers — Jinja autoescape
+    doesn't apply to f-strings built outside the template engine."""
+    import html
+    return html.escape(text or "", quote=True)
+
+
 def get_db():
     """Yield a transactional session, committing on success and rolling back on error."""
     SessionLocal = get_session_factory()
@@ -211,6 +218,7 @@ def create_app() -> FastAPI:
                 "title": "LabFlow — Dashboard",
                 "meetings": meetings,
                 "open_tasks": open_tasks,
+                "version": "0.5",
             },
         )
 
@@ -220,11 +228,49 @@ def create_app() -> FastAPI:
         meeting = db.get(models.Meeting, meeting_id)
         if meeting is None:
             raise NotFoundError("meeting not found")
+        # Render the team-wide decision graph as Mermaid for the review page.
+        mermaid = graph_mod.render_mermaid(
+            graph_mod.build_graph(db, team_id=meeting.team_id)
+        )
         return TEMPLATES.TemplateResponse(
             request,
             "review.html",
-            {"title": meeting.title, "meeting": meeting},
+            {"title": meeting.title, "meeting": meeting,
+             "mermaid": mermaid, "version": "0.5"},
         )
+
+    @app.get("/app/search", response_class=HTMLResponse, include_in_schema=False)
+    def search_fragment(
+        q: str = "",
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        """HTMX fragment used by the dashboard search box. Returns a small
+        rendered list rather than a full template to keep the round-trip
+        snappy."""
+        if not (q or "").strip():
+            return HTMLResponse("")
+        hits = search_mod.search(db, team_id=team.id, query=q, limit=15)
+        if not hits:
+            return HTMLResponse(
+                '<div class="text-slate-400">No matches yet.</div>'
+            )
+        items = []
+        for h in hits:
+            href = (f"/meetings/{h.meeting_id}/review"
+                    if h.meeting_id else "#")
+            items.append(
+                f'<li class="py-2"><a href="{href}" class="block hover:bg-slate-50 rounded px-2 -mx-2">'
+                f'<span class="inline-block rounded bg-slate-100 px-1.5 py-0.5 '
+                f'text-[10px] font-medium uppercase text-slate-600 mr-2">{h.kind}</span>'
+                f'<span class="font-medium">{_html_escape(h.title)}</span>'
+                f'<span class="ml-2 text-xs text-slate-400">score {h.score:.2f}</span>'
+                f'<div class="text-xs text-slate-500 mt-0.5">{_html_escape(h.snippet)}</div>'
+                f'</a></li>'
+            )
+        body = ('<ul class="divide-y divide-slate-100">' + "".join(items) +
+                "</ul>")
+        return HTMLResponse(body)
 
     # ----------------------------------------------------------- meeting API
     @app.post("/api/meetings", response_model=MeetingOut, status_code=201)
