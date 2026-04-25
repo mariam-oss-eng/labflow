@@ -58,6 +58,32 @@ class Settings(BaseSettings):
     # return a JSON string conforming to ExtractionResult.
     llm_callable: str = ""
 
+    # --- semantic search (v0.4) ---------------------------------------
+    # Embeddings: deterministic offline by default. Set
+    # ``LABFLOW_EMBEDDING_CALLABLE`` to a "module:fn" path to use a real
+    # provider. Vectors are persisted as JSON arrays in SQL — no special
+    # vector store required at the scale LabFlow targets.
+    embedding_callable: str = ""
+    embedding_dim: int = 256
+    # Hybrid ranking weights for /api/search. ``alpha`` is the weight on
+    # semantic similarity; (1-alpha) is the weight on lexical/BM25-ish.
+    search_alpha: float = 0.5
+
+    # --- rate limiting (v0.4) -----------------------------------------
+    # Per-team token bucket. Set rate_limit_per_minute<=0 to disable.
+    rate_limit_per_minute: int = 600
+    rate_limit_burst: int = 60
+
+    # --- idempotency (v0.4) -------------------------------------------
+    # How long to retain Idempotency-Key replays (in seconds).
+    idempotency_ttl_seconds: int = 24 * 3600
+
+    # --- encryption at rest (v0.5) ------------------------------------
+    # Optional Fernet key (urlsafe base64). When set, transcripts and
+    # notes are encrypted before being written to the DB. Generate with
+    # ``python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"``.
+    data_key: str = ""
+
     # --- webhooks (v0.3) -----------------------------------------------
     webhook_signing_secret: str = ""
     github_webhook_secret: str = ""

@@ -17,8 +17,20 @@ from sqlalchemy.orm import Session
 
 from . import audit as audit_mod
 from . import digest as digest_mod
-from . import exports, jobs as jobs_mod, metrics, models, search as search_mod, services, verification, webhooks as webhooks_mod
-from .auth import build_team_dependency, ensure_bootstrap_team
+from . import (
+    exports,
+    graph as graph_mod,
+    jobs as jobs_mod,
+    metrics,
+    models,
+    retention as retention_mod,
+    search as search_mod,
+    services,
+    sse as sse_mod,
+    verification,
+    webhooks as webhooks_mod,
+)
+from .auth import build_team_dependency, ensure_bootstrap_team, require_role
 from .config import get_settings
 from .db import get_session_factory, init_db
 from .errors import (
@@ -76,8 +88,24 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.3.0",
-        description="Meeting-to-execution OS for research and technical teams.",
+        version="0.5.0",
+        description=(
+            "Meeting-to-execution OS for research and technical teams. "
+            "Turns transcripts into a queryable graph of decisions, tasks, "
+            "experiments, and evidence."
+        ),
+        contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
+        license_info={"name": "MIT"},
+        openapi_tags=[
+            {"name": "meetings", "description": "Upload, extract, finalize, export."},
+            {"name": "tasks", "description": "Action items with owners, deadlines, evidence."},
+            {"name": "evidence", "description": "Artifacts that verify task completion."},
+            {"name": "search", "description": "Hybrid keyword + semantic search."},
+            {"name": "graph", "description": "Decision graph with supersession edges."},
+            {"name": "jobs", "description": "Background job introspection."},
+            {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
+            {"name": "system", "description": "Health, readiness, metrics, live updates."},
+        ],
     )
 
     # In test/dev we still call create_all so the app boots without a
@@ -99,6 +127,13 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # v0.4 — rate limit + idempotency. Order: rate limit OUTSIDE
+    # idempotency so a flood of replays still gets 429'd.
+    from .idempotency import IdempotencyMiddleware
+    from .ratelimit import RateLimitMiddleware
+    app.add_middleware(IdempotencyMiddleware)
+    app.add_middleware(RateLimitMiddleware)
 
     static_dir = WEB_DIR / "static"
     if static_dir.is_dir():
@@ -263,7 +298,7 @@ def create_app() -> FastAPI:
         services.persist_extraction(db, meeting, result)
         return MeetingOut.model_validate(meeting)
 
-    @app.post("/api/meetings/{meeting_id}/finalize", response_model=MeetingOut)
+    @app.post("/api/meetings/{meeting_id}/finalize", response_model=MeetingOut, tags=["meetings"])
     def finalize(
         meeting_id: int,
         db: Session = Depends(get_db),
@@ -279,6 +314,9 @@ def create_app() -> FastAPI:
             webhooks_mod.emit(db, team_id=team.id, event="meeting.finalized",
                               payload={"meeting_id": meeting.id, "title": meeting.title})
             metrics.inc("labflow_meetings_finalized_total", team=team.slug)
+            sse_mod.hub().publish(team.id, "meeting.finalized", {
+                "meeting_id": meeting.id, "title": meeting.title,
+            })
         db.flush()
         return MeetingOut.model_validate(meeting)
 
@@ -388,6 +426,9 @@ def create_app() -> FastAPI:
                 webhooks_mod.emit(db, team_id=team.id, event="task.closed",
                                   payload={"task_id": task.id, "title": task.title})
                 metrics.inc("labflow_tasks_closed_total", team=team.slug)
+                sse_mod.hub().publish(team.id, "task.closed", {
+                    "task_id": task.id, "title": task.title,
+                })
         return TaskOut.model_validate(task)
 
     # ------------------------------------------------------------ evidence
@@ -419,25 +460,40 @@ def create_app() -> FastAPI:
             webhooks_mod.emit(db, team_id=team.id, event="evidence.verified",
                               payload={"task_id": task.id, "uri": ev.uri})
             metrics.inc("labflow_evidence_verified_total", team=team.slug)
+            sse_mod.hub().publish(team.id, "evidence.verified", {
+                "task_id": task.id, "uri": ev.uri, "score": ev.score,
+            })
         return EvidenceOut.model_validate(ev)
 
     # ------------------------------------------------------------ search
-    @app.get("/api/search")
+    @app.get("/api/search", tags=["search"])
     def search(
         q: str,
         limit: int = 25,
+        alpha: float | None = None,
         db: Session = Depends(get_db),
         team: models.Team = Depends(require_team),
     ) -> dict:
-        hits = search_mod.search(db, team_id=team.id, query=q,
-                                 limit=min(max(limit, 1), 100))
+        """Hybrid keyword + semantic search across decisions and tasks.
+
+        ``alpha`` (0..1) blends the two signals — ``0`` is pure lexical,
+        ``1`` is pure semantic, default uses ``LABFLOW_SEARCH_ALPHA``.
+        Each result also includes ``score_components`` for explainability.
+        """
+        hits = search_mod.search(
+            db, team_id=team.id, query=q,
+            limit=min(max(limit, 1), 100),
+            alpha=alpha,
+        )
         return {
             "query": q,
+            "alpha": alpha,
             "results": [
                 {
                     "kind": h.kind, "id": h.id, "title": h.title,
                     "snippet": h.snippet, "score": h.score,
                     "meeting_id": h.meeting_id,
+                    "score_components": h.score_components,
                 }
                 for h in hits
             ],
@@ -565,6 +621,92 @@ def create_app() -> FastAPI:
         body = metrics.render(db)
         return Response(content=body, media_type="text/plain; version=0.0.4")
 
+    # ------------------------------------------------------------ graph (v0.4)
+    @app.get("/api/graph/decisions", tags=["graph"])
+    def decision_graph_json(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        """Return the team's decision graph as ``{"nodes": [...], "edges": [...]}``."""
+        return graph_mod.build_graph(db, team_id=team.id).to_dict()
+
+    @app.get("/api/graph/decisions.mermaid", response_class=PlainTextResponse, tags=["graph"])
+    def decision_graph_mermaid(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> str:
+        """Return the decision graph rendered as a Mermaid ``flowchart``."""
+        return graph_mod.render_mermaid(graph_mod.build_graph(db, team_id=team.id))
+
+    # ------------------------------------------------------------ live updates (v0.5)
+    @app.get("/api/stream", include_in_schema=True, tags=["system"])
+    async def stream(
+        team: models.Team = Depends(require_team),
+    ) -> Response:
+        """Server-Sent Events stream of team activity (heartbeat every 15s).
+
+        Connect with ``EventSource`` from a browser or any standards-
+        compliant SSE client. Events include ``meeting.finalized``,
+        ``task.closed``, ``evidence.verified``.
+        """
+        from starlette.responses import StreamingResponse
+        return StreamingResponse(
+            sse_mod.stream(team.id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # disable nginx buffering
+            },
+        )
+
+    # ------------------------------------------------------------ identity (v0.5)
+    @app.get("/api/me", tags=["system"])
+    def whoami(
+        request: Request,
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        """Return the caller's identity, role, and rate-limit posture."""
+        return {
+            "team": {"id": team.id, "slug": team.slug, "name": team.name},
+            "role": getattr(request.state, "role", "admin"),
+            "auth_enabled": settings.auth_enabled,
+        }
+
+    # ------------------------------------------------------------ admin (v0.5)
+    @app.get("/api/admin/export", tags=["admin"])
+    def admin_export(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+        _: None = Depends(require_role("admin")),
+    ) -> dict:
+        """GDPR Article 15 — full export of every row scoped to this team."""
+        return retention_mod.export_team(db, team_id=team.id)
+
+    @app.delete("/api/admin/erase", tags=["admin"])
+    def admin_erase(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+        _: None = Depends(require_role("admin")),
+    ) -> dict:
+        """GDPR Article 17 — hard-delete the team and every cascaded row."""
+        # Audit *before* delete; the audit row itself goes away with the cascade.
+        audit_mod.record(db, team_id=team.id, action="team.erased",
+                         entity_type="team", entity_id=team.id,
+                         actor="admin")
+        retention_mod.erase_team(db, team_id=team.id)
+        return {"erased": True}
+
+    @app.post("/api/admin/retention/sweep", tags=["admin"])
+    def admin_retention_sweep(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+        _: None = Depends(require_role("admin")),
+    ) -> dict:
+        """Run the retention sweep immediately. Useful for ops dry-runs."""
+        return retention_mod.sweep(db)
+
+
     # ------------------------------------------------------------ digest
     @app.get("/api/digest/weekly", response_class=PlainTextResponse)
     def weekly_digest(
@@ -576,7 +718,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------ health
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
-        return {"ok": True, "version": "0.3.0"}
+        return {"ok": True, "version": "0.5.0"}
 
     @app.get("/readyz", include_in_schema=False)
     def readyz(db: Session = Depends(get_db)) -> dict:

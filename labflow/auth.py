@@ -126,6 +126,19 @@ def build_team_dependency(db_dep):
     """
     settings = get_settings()
 
+    def _resolve_role(db: Session, key_id: int | None) -> str:
+        """Return the role for an API key, defaulting to ``admin`` when the
+        key has no explicit membership row (backwards compatibility for
+        keys created before v0.5)."""
+        if key_id is None:
+            return "admin"
+        m = db.execute(
+            select(models.Membership).where(
+                models.Membership.api_key_id == key_id
+            )
+        ).scalar_one_or_none()
+        return m.role if m is not None else "admin"
+
     def _dep(
         request: Request,
         authorization: Optional[str] = Header(default=None),
@@ -140,6 +153,8 @@ def build_team_dependency(db_dep):
             if team is None:
                 team = ensure_bootstrap_team(db)
             request.state.team_id = team.id
+            request.state.team = team
+            request.state.role = "admin"
             return team
 
         plaintext = _extract_key(authorization, x_labflow_key)
@@ -164,8 +179,33 @@ def build_team_dependency(db_dep):
             pass
         request.state.team_id = team.id
         request.state.api_key_id = key.id
+        request.state.team = team
+        request.state.role = _resolve_role(db, key.id)
         return team
 
+    return _dep
+
+
+# ---------------------------------------------------------------------------
+# RBAC (v0.5)
+# ---------------------------------------------------------------------------
+ROLE_HIERARCHY = {"viewer": 0, "member": 1, "admin": 2}
+
+
+def require_role(min_role: str):
+    """Return a dependency that enforces ``request.state.role >= min_role``.
+
+    Roles are ordered ``viewer < member < admin``. Use ``require_role("admin")``
+    on destructive endpoints (team delete, key revoke, retention purge).
+    """
+    threshold = ROLE_HIERARCHY[min_role]
+
+    def _dep(request: Request) -> None:
+        role = getattr(request.state, "role", "admin")
+        if ROLE_HIERARCHY.get(role, -1) < threshold:
+            raise ForbiddenError(
+                f"role {role!r} cannot perform this action; need {min_role!r}"
+            )
     return _dep
 
 

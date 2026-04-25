@@ -30,6 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .crypto import EncryptedText
 from .db import Base
 from .time_utils import now_utc
 
@@ -109,8 +110,8 @@ class Meeting(Base):
     title: Mapped[str] = mapped_column(String(255))
     meeting_type: Mapped[str] = mapped_column(String(64), default="standup")
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
-    transcript: Mapped[str] = mapped_column(Text, default="")
-    notes: Mapped[str] = mapped_column(Text, default="")
+    transcript: Mapped[str] = mapped_column(EncryptedText, default="")
+    notes: Mapped[str] = mapped_column(EncryptedText, default="")
     finalized: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
@@ -332,4 +333,89 @@ class WebhookDelivery(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.4 — embeddings, idempotency
+# ---------------------------------------------------------------------------
+class Embedding(Base):
+    """A semantic vector attached to an entity (decision, task, …).
+
+    Stored as a JSON-serialized ``list[float]`` so we don't depend on a
+    pgvector extension. ``model`` records which embedder produced the
+    vector — when an operator switches embedders, vectors with the wrong
+    ``model`` value are ignored (and re-computed lazily) so similarity
+    search never mixes incompatible spaces.
+    """
+
+    __tablename__ = "embeddings"
+    __table_args__ = (
+        UniqueConstraint("team_id", "entity_type", "entity_id", "model",
+                         name="uq_embeddings_entity_model"),
+        Index("ix_embeddings_team_entity", "team_id", "entity_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))   # "decision" | "task"
+    entity_id: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String(64))         # e.g. "hash-bow"
+    dim: Mapped[int] = mapped_column(Integer)
+    vector: Mapped[str] = mapped_column(Text)              # JSON-encoded list[float]
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class IdempotencyRecord(Base):
+    """Replay-protection cache for ``POST`` requests with ``Idempotency-Key``.
+
+    A key is unique per ``(team_id, key)`` and stores the request hash plus
+    the response so identical retries return the same payload. Mismatched
+    bodies for the same key return 409 to surface programmer errors.
+    """
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("team_id", "key", name="uq_idempotency_team_key"),
+        Index("ix_idempotency_expires", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    method: Mapped[str] = mapped_column(String(8))
+    path: Mapped[str] = mapped_column(String(255))
+    status_code: Mapped[int] = mapped_column(Integer)
+    response_body: Mapped[str] = mapped_column(Text)
+    response_content_type: Mapped[str] = mapped_column(String(64), default="application/json")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# ---------------------------------------------------------------------------
+# v0.5 — RBAC
+# ---------------------------------------------------------------------------
+class Membership(Base):
+    """Binds an :class:`ApiKey` to a role within a :class:`Team`.
+
+    The default role is ``"member"``. Production deployments should
+    explicitly create ``admin`` keys for human operators and ``viewer``
+    keys for read-only integrations.
+
+    A row is implicitly created for the bootstrap key with role ``admin``;
+    additional roles are managed via the CLI (``labflow keys grant``).
+    """
+
+    __tablename__ = "memberships"
+    __table_args__ = (
+        UniqueConstraint("api_key_id", name="uq_membership_api_key"),
+        Index("ix_membership_team_role", "team_id", "role"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member | viewer
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
 

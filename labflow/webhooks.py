@@ -102,6 +102,8 @@ def deliver_pending(
 
     ``http_post`` is injectable for tests — defaults to a stdlib-based POST.
     """
+    from .notifiers.slack import is_slack_url, to_slack_payload
+
     poster = http_post or _default_post
     pending = list(
         sess.execute(
@@ -119,15 +121,28 @@ def deliver_pending(
         if sub is None or not sub.active:
             d.attempts = _MAX_ATTEMPTS  # don't keep retrying orphans
             continue
-        body = d.payload.encode("utf-8")
-        signature = sign(body, sub.secret or get_settings().webhook_signing_secret)
-        try:
-            status, resp_body = poster(sub.url, body, {
+        # Reshape for Slack incoming webhooks.
+        if is_slack_url(sub.url):
+            try:
+                envelope = json.loads(d.payload)
+                body_str = to_slack_payload(envelope.get("event", d.event),
+                                            envelope.get("data", {}))
+            except Exception:  # noqa: BLE001
+                body_str = d.payload
+            body = body_str.encode("utf-8")
+            headers = {"Content-Type": "application/json",
+                       "User-Agent": "LabFlow/0.4"}
+        else:
+            body = d.payload.encode("utf-8")
+            signature = sign(body, sub.secret or get_settings().webhook_signing_secret)
+            headers = {
                 "Content-Type": "application/json",
                 "X-LabFlow-Event": d.event,
                 "X-LabFlow-Signature-256": signature,
-                "User-Agent": "LabFlow/0.3",
-            })
+                "User-Agent": "LabFlow/0.4",
+            }
+        try:
+            status, resp_body = poster(sub.url, body, headers)
         except Exception as exc:  # noqa: BLE001
             log.warning("webhook_delivery_error", extra={
                 "delivery_id": d.id, "subscription_id": sub.id, "error": str(exc)

@@ -14,7 +14,7 @@ from typing import Dict, List
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import models
+from . import embedding_store, models
 from .schemas import ExtractionResult
 
 
@@ -46,6 +46,15 @@ def persist_extraction(
     are cleared so this function is idempotent under re-extraction.
     """
     team_id = meeting.team_id
+    # Clean up stale embeddings for the entities we're about to recreate.
+    for old_d in meeting.decisions:
+        embedding_store.delete_for(
+            sess, team_id=team_id, entity_type="decision", entity_id=old_d.id
+        )
+    for old_t in meeting.tasks:
+        embedding_store.delete_for(
+            sess, team_id=team_id, entity_type="task", entity_id=old_t.id
+        )
     meeting.decisions.clear()
     meeting.tasks.clear()
     meeting.experiments.clear()
@@ -75,6 +84,12 @@ def persist_extraction(
         for old in prior:
             if old.id != new_decision.id and old.superseded_by_id is None:
                 old.superseded_by_id = new_decision.id
+        # Embed the decision text for semantic search.
+        embedding_store.upsert_vector(
+            sess, team_id=team_id, entity_type="decision",
+            entity_id=new_decision.id,
+            text=f"{new_decision.statement}\n{new_decision.rationale or ''}",
+        )
 
     # Tasks — first pass to create rows, second pass to link dependencies.
     title_to_task: Dict[str, models.Task] = {}
@@ -95,6 +110,11 @@ def persist_extraction(
         sess.add(task)
         sess.flush()
         title_to_task[t.title] = task
+        embedding_store.upsert_vector(
+            sess, team_id=team_id, entity_type="task",
+            entity_id=task.id,
+            text=f"{task.title}\n{task.description or ''}",
+        )
 
     for t in result.tasks:
         task = title_to_task[t.title]
