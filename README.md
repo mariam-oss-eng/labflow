@@ -15,8 +15,11 @@ labs, and prototype-heavy hackathon teams — not for generic SMB note-taking.
 
 ## Quickstart
 
+### Local (SQLite)
+
 ```bash
 pip install -r requirements.txt
+alembic upgrade head        # create tables (or use init_db() in dev)
 uvicorn labflow.main:app --reload
 ```
 
@@ -24,9 +27,38 @@ Open <http://localhost:8000> for the landing page, <http://localhost:8000/app>
 for the dashboard, and <http://localhost:8000/docs> for the auto-generated
 OpenAPI explorer.
 
+### Docker (Postgres + API)
+
+```bash
+cp .env.example .env        # then edit LABFLOW_BOOTSTRAP_API_KEY
+docker compose up --build
+```
+
 A SQLite database is created in the working directory by default. Point
 `LABFLOW_DATABASE_URL` at Postgres for production
-(e.g. `postgresql+psycopg://user:pass@host/labflow`).
+(e.g. `postgresql+psycopg://user:pass@host/labflow`). All settings are
+documented in [`.env.example`](.env.example).
+
+## Authentication
+
+LabFlow ships with API-key authentication and per-team isolation. Every
+row carries a `team_id` and is invisible to other teams.
+
+| Mode | When | How |
+|---|---|---|
+| **Single-team** (default) | Local dev, demos | `LABFLOW_AUTH_ENABLED=false` — every request resolves to the bootstrap team |
+| **Multi-tenant** (production) | Always | `LABFLOW_AUTH_ENABLED=true` — send `Authorization: Bearer lfk_…` or `X-LabFlow-Key: lfk_…` on every API call |
+
+Mint keys via the CLI:
+
+```bash
+labflow team create acme
+labflow keys create acme --name "ci-bot"   # prints plaintext exactly once
+labflow keys revoke <key-id>
+```
+
+API keys are stored as SHA-256 hashes — the plaintext is shown only at
+creation time.
 
 ## Try it on the demo transcripts
 
@@ -66,10 +98,12 @@ are reproducible and the system runs offline. The pipeline is in
 - `rules.py` — decision / task / experiment / assumption / blocker rules
 - `pipeline.py` — orchestration, validates output against `ExtractionResult`
 
-To plug an LLM backend, set `LABFLOW_LLM_PROVIDER` and replace
-`extract()` with a function that returns a validated
-`labflow.schemas.ExtractionResult`. The strict Pydantic schema (`extra="forbid"`)
-will catch hallucinations or schema drift early.
+To plug an LLM backend, set `LABFLOW_EXTRACTION_BACKEND=llm` and
+`LABFLOW_LLM_CALLABLE=mypkg.module:complete` to a callable that returns
+JSON conforming to `ExtractionResult`. The strict Pydantic schema
+(`extra="forbid"`) will catch hallucinations or schema drift early; on
+any error (network failure, bad JSON, validation error) the LLM backend
+falls back to the rules pipeline so ingestion never breaks.
 
 ## Verification
 
@@ -121,12 +155,18 @@ labflow/
 
 ## Roadmap
 
-- **Phase 1 (this MVP):** transcript upload, extraction, review, export,
-  weekly digest, evidence ingestion + auto-completion.
-- **Phase 2:** GitHub / Linear / Notion connectors, vector search over the
-  decision graph, cross-meeting continuity UI, eval-result ingestion.
-- **Phase 3:** custom templates per team, hosted LLM extraction with
-  fine-tuned domain adapters.
+- **0.1 (MVP):** transcript upload, extraction, review, export, weekly
+  digest, evidence ingestion + auto-completion.
+- **0.2 (production foundations):** API-key auth + per-team isolation,
+  typed config, structured logs, error envelope, pagination, pluggable
+  extractor backends, Alembic migrations, Docker, CI.
+- **0.3 (production scale):** background job queue, async extraction,
+  audit log, outbound webhooks, GitHub inbound webhook, search,
+  Prometheus metrics, CLI, operations docs.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the detailed change log and
+[`docs/operations.md`](docs/operations.md) for production deployment
+notes.
 
 See [`docs/product_spec.md`](docs/product_spec.md),
 [`docs/pricing.md`](docs/pricing.md), and

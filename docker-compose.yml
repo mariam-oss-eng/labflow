@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: labflow
+      POSTGRES_PASSWORD: labflow
+      POSTGRES_DB: labflow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LABFLOW_DATABASE_URL: postgresql+psycopg://labflow:labflow@postgres:5432/labflow
+      LABFLOW_AUTH_ENABLED: "true"
+      LABFLOW_BOOTSTRAP_TEAM: default
+      LABFLOW_BOOTSTRAP_API_KEY: ${LABFLOW_BOOTSTRAP_API_KEY:-lfk_change_me_in_production}
+      LABFLOW_LOG_JSON: "true"
+      LABFLOW_LOG_LEVEL: INFO
+      LABFLOW_WORKERS: "2"
+    ports:
+      - "8000:8000"
+
+  worker:
+    # In v0.3 this runs the in-process job queue out-of-band so the API
+    # process stays focused on serving HTTP. Same image, different command.
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LABFLOW_DATABASE_URL: postgresql+psycopg://labflow:labflow@postgres:5432/labflow
+      LABFLOW_LOG_JSON: "true"
+      LABFLOW_LOG_LEVEL: INFO
+    command: ["python", "-m", "labflow.cli", "worker"]
+
+volumes:
+  pgdata:
