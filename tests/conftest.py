@@ -4,7 +4,6 @@ Each test gets its own SQLite database so we never share state between tests.
 """
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -18,10 +17,13 @@ def temp_db(monkeypatch):
     db_path = tmp_dir / "test.db"
     url = f"sqlite:///{db_path}"
     monkeypatch.setenv("LABFLOW_DATABASE_URL", url)
+    monkeypatch.setenv("LABFLOW_AUTH_ENABLED", "false")
+    monkeypatch.setenv("LABFLOW_BOOTSTRAP_TEAM", "default")
 
-    # Reset cached engine/session in the db module so they pick up the new URL.
+    from labflow import config as config_mod
     from labflow import db as db_mod
 
+    config_mod.reset_settings_cache()
     db_mod._engine = None
     db_mod._SessionLocal = None
     db_mod.init_db()
@@ -30,6 +32,7 @@ def temp_db(monkeypatch):
     finally:
         db_mod._engine = None
         db_mod._SessionLocal = None
+        config_mod.reset_settings_cache()
         if db_path.exists():
             db_path.unlink()
         try:
@@ -50,6 +53,13 @@ def session(temp_db):
 
 
 @pytest.fixture()
+def default_team(session):
+    """Bootstrap team available in single-team mode."""
+    from labflow.auth import ensure_bootstrap_team
+    return ensure_bootstrap_team(session)
+
+
+@pytest.fixture()
 def app_client(temp_db):
     """Build a fresh FastAPI app + TestClient bound to the temp DB."""
     from fastapi.testclient import TestClient
@@ -58,3 +68,4 @@ def app_client(temp_db):
 
     app = create_app()
     return TestClient(app)
+

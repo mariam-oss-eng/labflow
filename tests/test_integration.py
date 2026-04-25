@@ -10,7 +10,7 @@ def test_full_lifecycle_upload_extract_finalize_export(app_client):
         data={"title": "Research standup", "meeting_type": "standup"},
         files={"transcript_file": ("standup.txt", transcript, "text/plain")},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     meeting = resp.json()
     mid = meeting["id"]
     assert meeting["finalized"] is False
@@ -19,8 +19,10 @@ def test_full_lifecycle_upload_extract_finalize_export(app_client):
     r2 = app_client.post(f"/api/meetings/{mid}/extract")
     assert r2.status_code == 200
 
-    # 3. Tasks should be visible via the task API
-    tasks = app_client.get("/api/tasks").json()
+    # 3. Tasks should be visible via the task API (paginated envelope)
+    body = app_client.get("/api/tasks").json()
+    tasks = body["items"]
+    assert body["page"]["total"] >= 1
     assert len(tasks) >= 1
     task_titles = [t["title"].lower() for t in tasks]
     assert any("ablation" in t for t in task_titles)
@@ -42,12 +44,12 @@ def test_full_lifecycle_upload_extract_finalize_export(app_client):
             "summary": "carol: ablation on attention dropout rate complete",
         },
     )
-    assert r.status_code == 200
+    assert r.status_code == 201
     body = r.json()
     assert body["verified"] is True
 
     # 6. Confirm the task is now done
-    refreshed = app_client.get("/api/tasks").json()
+    refreshed = app_client.get("/api/tasks").json()["items"]
     closed = [t for t in refreshed if t["id"] == target["id"]]
     assert closed and closed[0]["status"] == "done"
 
@@ -66,7 +68,7 @@ def test_full_lifecycle_upload_extract_finalize_export(app_client):
 
     # 10. Re-extract is now blocked
     r = app_client.post(f"/api/meetings/{mid}/extract")
-    assert r.status_code == 400
+    assert r.status_code == 409  # ConflictError
 
     # 11. Weekly digest is generated and references our meeting's owners/decisions.
     digest = app_client.get("/api/digest/weekly").text
@@ -96,8 +98,11 @@ def test_multi_meeting_decision_continuity(app_client):
 def test_landing_and_dashboard_render(app_client):
     assert app_client.get("/").status_code == 200
     assert app_client.get("/app").status_code == 200
-    assert app_client.get("/healthz").json() == {"ok": True}
+    health = app_client.get("/healthz").json()
+    assert health["ok"] is True
 
 
 def test_review_404_for_missing_meeting(app_client):
-    assert app_client.get("/meetings/9999/review").status_code == 404
+    r = app_client.get("/meetings/9999/review")
+    assert r.status_code == 404
+

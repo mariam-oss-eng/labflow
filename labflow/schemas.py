@@ -138,3 +138,36 @@ class EvidenceOut(BaseModel):
     summary: Optional[str]
     score: float
     verified: bool
+
+
+class TaskUpdate(BaseModel):
+    """Strict update payload for ``PATCH /api/tasks/{id}``.
+
+    Only listed fields are mutable; ``extra="forbid"`` ensures stray fields
+    raise 422 instead of being silently ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: Optional[TaskStatus] = None
+    due_date: Optional[datetime] = None
+    uncertainty: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class PageMeta(BaseModel):
+    """Pagination metadata returned alongside list endpoints."""
+
+    total: int
+    limit: int
+    offset: int
+
+
+class PaginatedTasks(BaseModel):
+    items: list[TaskOut]
+    page: PageMeta
+
+
+class PaginatedMeetings(BaseModel):
+    items: list[MeetingOut]
+    page: PageMeta

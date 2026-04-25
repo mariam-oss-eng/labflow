@@ -6,10 +6,13 @@ from labflow import models, services
 from labflow.extraction import extract
 
 
-def test_digest_includes_recent_activity(session):
+def test_digest_includes_recent_activity(session, default_team):
     text = "@alice will retrain the model tomorrow. We decided to use SentencePiece."
     meeting = models.Meeting(
-        title="standup", transcript=text, occurred_at=datetime.utcnow() - timedelta(days=1)
+        team_id=default_team.id,
+        title="standup",
+        transcript=text,
+        occurred_at=datetime.utcnow() - timedelta(days=1),
     )
     session.add(meeting)
     session.flush()
@@ -23,15 +26,16 @@ def test_digest_includes_recent_activity(session):
     assert "Decisions" in md
 
 
-def test_digest_overdue_surfacing(session):
+def test_digest_overdue_surfacing(session, default_team):
     past = datetime.utcnow() - timedelta(days=3)
-    meeting = models.Meeting(title="kickoff", occurred_at=past)
+    meeting = models.Meeting(team_id=default_team.id, title="kickoff", occurred_at=past)
     session.add(meeting)
     session.flush()
-    owner = models.Owner(handle="alice", display_name="Alice")
+    owner = models.Owner(team_id=default_team.id, handle="alice", display_name="Alice")
     session.add(owner)
     session.flush()
     overdue = models.Task(
+        team_id=default_team.id,
         meeting=meeting,
         title="ship the API",
         owner=owner,
@@ -46,11 +50,12 @@ def test_digest_overdue_surfacing(session):
     assert "Overdue" in d.to_markdown()
 
 
-def test_digest_high_uncertainty_surfacing(session):
-    meeting = models.Meeting(title="m")
+def test_digest_high_uncertainty_surfacing(session, default_team):
+    meeting = models.Meeting(team_id=default_team.id, title="m")
     session.add(meeting)
     session.flush()
     t = models.Task(
+        team_id=default_team.id,
         meeting=meeting,
         title="maybe try a new optimizer",
         uncertainty=0.7,
@@ -62,3 +67,4 @@ def test_digest_high_uncertainty_surfacing(session):
     d = digest_mod.build_weekly_digest(session)
     assert t in d.high_uncertainty_tasks
     assert "Needs review" in d.to_markdown()
+

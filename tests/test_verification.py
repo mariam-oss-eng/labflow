@@ -3,23 +3,25 @@ from labflow import models, services, verification
 from labflow.extraction import extract
 
 
-def _seed_meeting(session, transcript: str):
-    meeting = models.Meeting(title="t", transcript=transcript)
+def _seed_meeting(session, transcript: str, team):
+    meeting = models.Meeting(team_id=team.id, title="t", transcript=transcript)
     session.add(meeting)
     session.flush()
     services.persist_extraction(session, meeting, extract(transcript))
     return meeting
 
 
-def test_commit_evidence_closes_matching_task(session):
+def test_commit_evidence_closes_matching_task(session, default_team):
     m = _seed_meeting(
         session,
         "@alice will retrain the tokenizer model tomorrow.",
+        default_team,
     )
     task = m.tasks[0]
     assert task.status == "open"
 
     ev = models.Evidence(
+        team_id=default_team.id,
         task=task,
         kind="commit",
         uri="https://github.com/lab/repo/commit/abc",
@@ -34,12 +36,13 @@ def test_commit_evidence_closes_matching_task(session):
     assert task.closed_at is not None
 
 
-def test_unrelated_evidence_does_not_close(session):
+def test_unrelated_evidence_does_not_close(session, default_team):
     m = _seed_meeting(
-        session, "@alice will retrain the tokenizer model tomorrow."
+        session, "@alice will retrain the tokenizer model tomorrow.", default_team
     )
     task = m.tasks[0]
     ev = models.Evidence(
+        team_id=default_team.id,
         task=task,
         kind="link",
         uri="https://example.com/coffee",
@@ -53,10 +56,11 @@ def test_unrelated_evidence_does_not_close(session):
     assert task.status == "open"
 
 
-def test_owner_handle_in_evidence_boosts_score(session):
-    m = _seed_meeting(session, "@alice will refactor the ingest service.")
+def test_owner_handle_in_evidence_boosts_score(session, default_team):
+    m = _seed_meeting(session, "@alice will refactor the ingest service.", default_team)
     task = m.tasks[0]
     ev = models.Evidence(
+        team_id=default_team.id,
         task=task,
         kind="commit",
         uri="https://github.com/lab/repo/pull/42",
@@ -66,3 +70,4 @@ def test_owner_handle_in_evidence_boosts_score(session):
     session.flush()
     score = verification.score_evidence(task, ev)
     assert score >= 0.5
+
