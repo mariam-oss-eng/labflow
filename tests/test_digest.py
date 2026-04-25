@@ -1,9 +1,15 @@
 """Weekly digest tests."""
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from labflow import digest as digest_mod
 from labflow import models, services
 from labflow.extraction import extract
+from labflow.time_utils import now_utc
+
+
+def _naive_now() -> "datetime":
+    """Helper: tz-naive UTC for SQLite-stored timestamps."""
+    return now_utc().replace(tzinfo=None)
 
 
 def test_digest_includes_recent_activity(session, default_team):
@@ -12,7 +18,7 @@ def test_digest_includes_recent_activity(session, default_team):
         team_id=default_team.id,
         title="standup",
         transcript=text,
-        occurred_at=datetime.utcnow() - timedelta(days=1),
+        occurred_at=_naive_now() - timedelta(days=1),
     )
     session.add(meeting)
     session.flush()
@@ -27,7 +33,7 @@ def test_digest_includes_recent_activity(session, default_team):
 
 
 def test_digest_overdue_surfacing(session, default_team):
-    past = datetime.utcnow() - timedelta(days=3)
+    past = _naive_now() - timedelta(days=3)
     meeting = models.Meeting(team_id=default_team.id, title="kickoff", occurred_at=past)
     session.add(meeting)
     session.flush()
@@ -39,7 +45,7 @@ def test_digest_overdue_surfacing(session, default_team):
         meeting=meeting,
         title="ship the API",
         owner=owner,
-        due_date=datetime.utcnow() - timedelta(days=1),
+        due_date=_naive_now() - timedelta(days=1),
         status="open",
     )
     session.add(overdue)
@@ -67,4 +73,5 @@ def test_digest_high_uncertainty_surfacing(session, default_team):
     d = digest_mod.build_weekly_digest(session)
     assert t in d.high_uncertainty_tasks
     assert "Needs review" in d.to_markdown()
+
 

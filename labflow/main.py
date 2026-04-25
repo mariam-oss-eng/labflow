@@ -15,8 +15,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import audit as audit_mod
 from . import digest as digest_mod
-from . import exports, models, services, verification
+from . import exports, jobs as jobs_mod, metrics, models, search as search_mod, services, verification, webhooks as webhooks_mod
 from .auth import build_team_dependency, ensure_bootstrap_team
 from .config import get_settings
 from .db import get_session_factory, init_db
@@ -75,7 +76,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.2.0",
+        version="0.3.0",
         description="Meeting-to-execution OS for research and technical teams.",
     )
 
@@ -269,7 +270,15 @@ def create_app() -> FastAPI:
         team: models.Team = Depends(require_team),
     ) -> MeetingOut:
         meeting = _get_team_meeting(db, meeting_id, team)
-        meeting.finalized = True
+        if not meeting.finalized:
+            meeting.finalized = True
+            audit_mod.record(
+                db, team_id=team.id, action="meeting.finalized",
+                entity_type="meeting", entity_id=meeting.id,
+            )
+            webhooks_mod.emit(db, team_id=team.id, event="meeting.finalized",
+                              payload={"meeting_id": meeting.id, "title": meeting.title})
+            metrics.inc("labflow_meetings_finalized_total", team=team.slug)
         db.flush()
         return MeetingOut.model_validate(meeting)
 
@@ -363,11 +372,22 @@ def create_app() -> FastAPI:
         if task is None or task.team_id != team.id:
             raise NotFoundError("task not found")
         data: dict[str, Any] = payload.model_dump(exclude_unset=True)
+        previous_status = task.status
         for key, value in data.items():
             if key == "status" and value == "done" and task.status != "done":
                 task.closed_at = now_utc().replace(tzinfo=None)
             setattr(task, key, value)
         db.flush()
+        if "status" in data and data["status"] != previous_status:
+            audit_mod.record(
+                db, team_id=team.id, action="task.status_changed",
+                entity_type="task", entity_id=task.id,
+                metadata={"from": previous_status, "to": task.status},
+            )
+            if task.status == "done":
+                webhooks_mod.emit(db, team_id=team.id, event="task.closed",
+                                  payload={"task_id": task.id, "title": task.title})
+                metrics.inc("labflow_tasks_closed_total", team=team.slug)
         return TaskOut.model_validate(task)
 
     # ------------------------------------------------------------ evidence
@@ -390,7 +410,160 @@ def create_app() -> FastAPI:
         db.add(ev)
         db.flush()
         verification.verify_evidence(db, ev)
+        if ev.verified:
+            audit_mod.record(
+                db, team_id=team.id, action="evidence.verified",
+                entity_type="evidence", entity_id=ev.id,
+                metadata={"task_id": task.id, "score": ev.score},
+            )
+            webhooks_mod.emit(db, team_id=team.id, event="evidence.verified",
+                              payload={"task_id": task.id, "uri": ev.uri})
+            metrics.inc("labflow_evidence_verified_total", team=team.slug)
         return EvidenceOut.model_validate(ev)
+
+    # ------------------------------------------------------------ search
+    @app.get("/api/search")
+    def search(
+        q: str,
+        limit: int = 25,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        hits = search_mod.search(db, team_id=team.id, query=q,
+                                 limit=min(max(limit, 1), 100))
+        return {
+            "query": q,
+            "results": [
+                {
+                    "kind": h.kind, "id": h.id, "title": h.title,
+                    "snippet": h.snippet, "score": h.score,
+                    "meeting_id": h.meeting_id,
+                }
+                for h in hits
+            ],
+        }
+
+    # ------------------------------------------------------------ async extract
+    @app.post("/api/meetings/{meeting_id}/extract:async", status_code=202)
+    def reextract_async(
+        meeting_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        meeting = _get_team_meeting(db, meeting_id, team)
+        if meeting.finalized:
+            raise ConflictError("meeting already finalized")
+        job = jobs_mod.enqueue(
+            db, team_id=team.id, kind="extract_meeting",
+            payload={"meeting_id": meeting.id},
+            idempotency_key=f"extract:{meeting.id}",
+        )
+        return {"job_id": job.id, "status": job.status}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(
+        job_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        job = db.get(models.Job, job_id)
+        if job is None or job.team_id != team.id:
+            raise NotFoundError("job not found")
+        import json as _json
+        return {
+            "id": job.id,
+            "kind": job.kind,
+            "status": job.status,
+            "attempts": job.attempts,
+            "error": job.error,
+            "result": _json.loads(job.result) if job.result else None,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        }
+
+    # ------------------------------------------------------------ inbound webhook
+    @app.post("/api/webhooks/github", include_in_schema=False)
+    async def github_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+        from .errors import AuthError
+        body = await request.body()
+        sig = request.headers.get("x-hub-signature-256")
+        if not webhooks_mod.verify_github_signature(body, sig):
+            raise AuthError("invalid signature")
+        event_type = request.headers.get("x-github-event", "unknown")
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        # Best-effort: turn pushes/PRs into evidence on tasks tagged with the
+        # repository's team. For MVP we just append an audit row so operators
+        # can confirm wiring; richer matching happens in a follow-up.
+        team_slug = (request.headers.get("x-labflow-team")
+                     or get_settings().bootstrap_team)
+        team = db.execute(
+            select(models.Team).where(models.Team.slug == team_slug)
+        ).scalar_one_or_none()
+        if team is None:
+            return {"ok": True, "note": "no matching team"}
+
+        audit_mod.record(
+            db, team_id=team.id, action="github.received",
+            entity_type="webhook", entity_id=None,
+            actor=f"github:{event_type}",
+            metadata={"event": event_type, "ref": data.get("ref")},
+        )
+        metrics.inc("labflow_github_events_total", team=team.slug, event=event_type)
+
+        # If this is a push or PR with a useful URL/summary, attach as
+        # evidence to any open task whose summary mentions a referenced
+        # commit message word. Keep it small — don't iterate the whole DB.
+        if event_type in ("push", "pull_request"):
+            commits = data.get("commits") or []
+            pr = (data.get("pull_request") or {})
+            uri = pr.get("html_url") or (commits[0].get("url") if commits else None)
+            summary = pr.get("title") or (commits[0].get("message") if commits else None)
+            if uri and summary:
+                # Cap candidates to recent open tasks for the team.
+                cands = list(
+                    db.execute(
+                        select(models.Task)
+                        .where(models.Task.team_id == team.id,
+                               models.Task.status != "done")
+                        .order_by(models.Task.id.desc()).limit(50)
+                    ).scalars()
+                )
+                attached = 0
+                for t in cands:
+                    ev = models.Evidence(
+                        team_id=team.id, task=t, kind="commit",
+                        uri=uri, summary=summary,
+                    )
+                    db.add(ev)
+                    db.flush()
+                    if verification.verify_evidence(db, ev):
+                        attached += 1
+                        audit_mod.record(
+                            db, team_id=team.id, action="evidence.verified",
+                            entity_type="evidence", entity_id=ev.id,
+                            actor=f"github:{event_type}",
+                            metadata={"task_id": t.id, "score": ev.score},
+                        )
+                    else:
+                        # Rollback the failed match — we don't want to
+                        # spam every open task with unrelated evidence.
+                        db.delete(ev)
+                        db.flush()
+                metrics.inc("labflow_github_evidence_attached_total",
+                            float(attached), team=team.slug)
+                return {"ok": True, "attached": attached}
+
+        return {"ok": True}
+
+    # ------------------------------------------------------------ metrics
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus_metrics(db: Session = Depends(get_db)) -> Response:
+        body = metrics.render(db)
+        return Response(content=body, media_type="text/plain; version=0.0.4")
 
     # ------------------------------------------------------------ digest
     @app.get("/api/digest/weekly", response_class=PlainTextResponse)
@@ -403,7 +576,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------ health
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
-        return {"ok": True, "version": "0.2.0"}
+        return {"ok": True, "version": "0.3.0"}
 
     @app.get("/readyz", include_in_schema=False)
     def readyz(db: Session = Depends(get_db)) -> dict:

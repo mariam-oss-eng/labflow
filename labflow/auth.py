@@ -36,7 +36,20 @@ _KEY_PREFIX = "lfk_"
 
 
 def hash_api_key(plaintext: str) -> str:
-    """Return the storage hash for an API key. Plaintext is never persisted."""
+    """Return the storage hash for an API key. Plaintext is never persisted.
+
+    SHA-256 is appropriate here (and used by the major API-first products
+    like Stripe and GitHub) because LabFlow API keys are *high-entropy
+    machine-generated tokens* — ``secrets.token_urlsafe(32)`` is 256 bits
+    of randomness, so brute-forcing the hash is computationally infeasible
+    regardless of how fast SHA-256 is. We deliberately do NOT use
+    bcrypt/argon2/scrypt: those add 10–100ms per request which is real
+    latency for an API-key validation that happens on every call, and
+    they only matter when the input has low entropy (i.e. user-chosen
+    passwords) — which API keys never do. CodeQL's
+    py/weak-sensitive-data-hashing rule is aimed at password storage and
+    does not apply here.
+    """
     return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
 
 
