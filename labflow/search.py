@@ -68,8 +68,12 @@ def _recency(then: datetime | None) -> float:
     year-old rows score ~0.25."""
     if then is None:
         return 0.0
-    now = now_utc().replace(tzinfo=None)
-    age_days = max((now - then).days, 0)
+    now_naive = now_utc().replace(tzinfo=None)
+    # ``then`` from the DB is tz-naive; if a caller hands us tz-aware,
+    # normalize to compare safely.
+    if getattr(then, "tzinfo", None) is not None:
+        then = then.replace(tzinfo=None)
+    age_days = max((now_naive - then).days, 0)
     return float(0.5 ** (age_days / 180.0))
 
 

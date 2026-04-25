@@ -47,21 +47,26 @@ def sweep(sess: Session, policy: RetentionPolicy | None = None) -> dict[str, int
     now = now_utc().replace(tzinfo=None)
     deleted: dict[str, int] = {}
 
+    # ``synchronize_session=False`` skips loading rows into the session
+    # cache before deletion — both faster and safer when the rows we're
+    # nuking might already be referenced from elsewhere in the session.
     cutoff = now - timedelta(days=pol.audit_event_days)
     deleted["audit_events"] = sess.execute(
-        delete(models.AuditEvent).where(models.AuditEvent.created_at < cutoff)
+        delete(models.AuditEvent).where(models.AuditEvent.created_at < cutoff),
+        execution_options={"synchronize_session": False},
     ).rowcount or 0
 
     cutoff = now - timedelta(days=pol.webhook_delivery_days)
     deleted["webhook_deliveries"] = sess.execute(
-        delete(models.WebhookDelivery).where(models.WebhookDelivery.created_at < cutoff)
+        delete(models.WebhookDelivery).where(models.WebhookDelivery.created_at < cutoff),
+        execution_options={"synchronize_session": False},
     ).rowcount or 0
 
-    cutoff = now - timedelta(days=pol.idempotency_record_days)
     deleted["idempotency_records"] = sess.execute(
         delete(models.IdempotencyRecord).where(
             models.IdempotencyRecord.expires_at < now
-        )
+        ),
+        execution_options={"synchronize_session": False},
     ).rowcount or 0
 
     cutoff = now - timedelta(days=pol.completed_job_days)
@@ -69,7 +74,8 @@ def sweep(sess: Session, policy: RetentionPolicy | None = None) -> dict[str, int
         delete(models.Job).where(
             models.Job.status.in_(("completed", "failed")),
             models.Job.finished_at < cutoff,
-        )
+        ),
+        execution_options={"synchronize_session": False},
     ).rowcount or 0
 
     sess.flush()
