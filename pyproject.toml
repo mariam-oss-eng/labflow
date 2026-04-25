@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "labflow"
-version = "0.1.0"
+version = "0.2.0"
 description = "LabFlow — meeting-to-execution OS for research and technical teams"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -14,18 +14,26 @@ dependencies = [
     "uvicorn[standard]>=0.27,<1.0",
     "sqlalchemy>=2.0,<3.0",
     "pydantic>=2.5,<3.0",
+    "pydantic-settings>=2.4,<3.0",
+    "alembic>=1.13,<2.0",
     "jinja2>=3.1,<4.0",
     "python-multipart>=0.0.22",
     "python-dateutil>=2.8",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "httpx>=0.27"]
+dev = ["pytest>=7.4", "httpx>=0.27", "pytest-cov>=4.1"]
+
+[project.scripts]
+labflow = "labflow.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["labflow*"]
-exclude = ["tests*", "demo*", "docs*"]
+exclude = ["tests*", "demo*", "docs*", "migrations*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning:dateutil.*",
+]

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import models
+from .time_utils import now_utc
 
 
 @dataclass
@@ -69,61 +70,68 @@ class WeeklyDigest:
         return "\n".join(lines).rstrip() + "\n"
 
 
-def build_weekly_digest(sess: Session, now: datetime | None = None) -> WeeklyDigest:
-    now = now or datetime.utcnow()
-    start = now - timedelta(days=7)
+def build_weekly_digest(
+    sess: Session, now: datetime | None = None, *, team_id: Optional[int] = None
+) -> WeeklyDigest:
+    """Build the weekly digest, optionally scoped to a single team."""
+    now = now or now_utc()
+    # Strip tz for SQLite compatibility — DB stores naive UTC datetimes.
+    cmp_now = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    start = cmp_now - timedelta(days=7)
+
+    def _scope(stmt):
+        return stmt.where(models.Meeting.team_id == team_id) if team_id is not None else stmt
 
     meetings = list(
         sess.execute(
-            select(models.Meeting).where(models.Meeting.occurred_at >= start)
+            _scope(select(models.Meeting).where(models.Meeting.occurred_at >= start))
         ).scalars()
     )
-    decisions = list(
-        sess.execute(
-            select(models.Decision).where(models.Decision.created_at >= start)
-        ).scalars()
+    decisions_q = select(models.Decision).where(models.Decision.created_at >= start)
+    if team_id is not None:
+        decisions_q = decisions_q.where(models.Decision.team_id == team_id)
+    decisions = list(sess.execute(decisions_q).scalars())
+
+    closed_q = select(models.Task).where(
+        models.Task.closed_at.is_not(None), models.Task.closed_at >= start
     )
-    closed = list(
-        sess.execute(
-            select(models.Task).where(
-                models.Task.closed_at.is_not(None), models.Task.closed_at >= start
-            )
-        ).scalars()
+    if team_id is not None:
+        closed_q = closed_q.where(models.Task.team_id == team_id)
+    closed = list(sess.execute(closed_q).scalars())
+
+    overdue_q = select(models.Task).where(
+        models.Task.status != "done",
+        models.Task.due_date.is_not(None),
+        models.Task.due_date < cmp_now,
     )
-    overdue = list(
-        sess.execute(
-            select(models.Task).where(
-                models.Task.status != "done",
-                models.Task.due_date.is_not(None),
-                models.Task.due_date < now,
-            )
-        ).scalars()
+    if team_id is not None:
+        overdue_q = overdue_q.where(models.Task.team_id == team_id)
+    overdue = list(sess.execute(overdue_q).scalars())
+
+    high_unc_q = select(models.Task).where(
+        models.Task.status != "done",
+        models.Task.uncertainty >= 0.5,
     )
-    high_unc = list(
-        sess.execute(
-            select(models.Task).where(
-                models.Task.status != "done",
-                models.Task.uncertainty >= 0.5,
-            )
-        ).scalars()
+    if team_id is not None:
+        high_unc_q = high_unc_q.where(models.Task.team_id == team_id)
+    high_unc = list(sess.execute(high_unc_q).scalars())
+
+    blockers_q = select(models.Blocker).where(models.Blocker.resolved.is_(False))
+    if team_id is not None:
+        blockers_q = blockers_q.where(models.Blocker.team_id == team_id)
+    blockers = list(sess.execute(blockers_q).scalars())
+
+    assumptions_q = select(models.Assumption).where(
+        models.Assumption.risk == "high",
+        models.Assumption.validated.is_(False),
     )
-    blockers = list(
-        sess.execute(
-            select(models.Blocker).where(models.Blocker.resolved.is_(False))
-        ).scalars()
-    )
-    assumptions = list(
-        sess.execute(
-            select(models.Assumption).where(
-                models.Assumption.risk == "high",
-                models.Assumption.validated.is_(False),
-            )
-        ).scalars()
-    )
+    if team_id is not None:
+        assumptions_q = assumptions_q.where(models.Assumption.team_id == team_id)
+    assumptions = list(sess.execute(assumptions_q).scalars())
 
     return WeeklyDigest(
         period_start=start,
-        period_end=now,
+        period_end=cmp_now,
         meetings=meetings,
         new_decisions=decisions,
         closed_tasks=closed,

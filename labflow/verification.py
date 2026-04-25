@@ -14,12 +14,12 @@ prefer surfacing evidence for human approval over silently auto-closing.
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy.orm import Session
 
 from . import models
+from .time_utils import now_utc
 
 _TOKEN = re.compile(r"[a-z0-9]{3,}")
 _VERIFY_THRESHOLD = 0.5
@@ -69,7 +69,7 @@ def verify_evidence(sess: Session, evidence: models.Evidence) -> bool:
         evidence.verified = True
         if task.status != "done":
             task.status = "done"
-            task.closed_at = datetime.utcnow()
+            task.closed_at = now_utc()
         sess.flush()
         return True
     sess.flush()

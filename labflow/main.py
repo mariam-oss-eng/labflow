@@ -1,12 +1,15 @@
 """FastAPI application factory and routes."""
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+import time
+import uuid
 from pathlib import Path
-from typing import List
+from typing import Any
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, Form, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -14,20 +17,39 @@ from sqlalchemy.orm import Session
 
 from . import digest as digest_mod
 from . import exports, models, services, verification
+from .auth import build_team_dependency, ensure_bootstrap_team
+from .config import get_settings
 from .db import get_session_factory, init_db
+from .errors import (
+    ConflictError,
+    NotFoundError,
+    PayloadTooLargeError,
+    ValidationError as LFValidationError,
+    install_exception_handlers,
+)
 from .extraction import extract
-from .schemas import EvidenceCreate, EvidenceOut, MeetingCreate, MeetingOut, TaskOut
+from .logging_setup import configure_logging, set_request_id
+from .schemas import (
+    EvidenceCreate,
+    EvidenceOut,
+    MeetingCreate,
+    MeetingOut,
+    PageMeta,
+    PaginatedTasks,
+    PaginatedMeetings,
+    TaskOut,
+    TaskUpdate,
+)
+from .time_utils import now_utc
 
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
-# Hard cap on user-supplied transcript size to bound regex work and memory.
-# Real meeting transcripts are well under this; uploads exceeding the cap
-# are rejected rather than silently truncated so users notice.
-MAX_TRANSCRIPT_BYTES = 1_000_000  # 1 MB
+log = logging.getLogger("labflow.api")
 
 
-def get_db() -> Session:
+def get_db():
+    """Yield a transactional session, committing on success and rolling back on error."""
     SessionLocal = get_session_factory()
     db = SessionLocal()
     try:
@@ -40,34 +62,112 @@ def get_db() -> Session:
         db.close()
 
 
+def _clamp_page_size(size: int | None) -> int:
+    settings = get_settings()
+    if size is None or size <= 0:
+        return settings.default_page_size
+    return min(size, settings.max_page_size)
+
+
 def create_app() -> FastAPI:
+    settings = get_settings()
+    configure_logging(settings.log_level, json_logs=settings.log_json)
+
     app = FastAPI(
         title="LabFlow",
-        version="0.1.0",
+        version="0.2.0",
         description="Meeting-to-execution OS for research and technical teams.",
     )
 
+    # In test/dev we still call create_all so the app boots without a
+    # separate `alembic upgrade`. In production, run `alembic upgrade head`
+    # before starting and disable this by setting LABFLOW_AUTO_CREATE=false.
     init_db()
+    # Ensure bootstrap team exists in single-team mode.
+    SessionLocal = get_session_factory()
+    with SessionLocal() as bootstrap_session:
+        ensure_bootstrap_team(bootstrap_session)
+
+    install_exception_handlers(app)
+
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     static_dir = WEB_DIR / "static"
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # ---- middleware: request-id + access log + simple latency header ------
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        request.state.request_id = rid
+        token = set_request_id(rid)
+        start = time.perf_counter()
+        try:
+            response: Response = await call_next(request)
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            log.info(
+                "http_request",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round(elapsed_ms, 2),
+                },
+            )
+            try:
+                set_request_id(None)
+            except Exception:
+                pass
+            # ``token`` is a contextvars.Token — we used set_request_id which
+            # returned a token; reset to clear leakage between requests.
+            try:
+                from .logging_setup import _request_id_ctx
+                _request_id_ctx.reset(token)
+            except Exception:
+                pass
+        response.headers["x-request-id"] = rid
+        response.headers["x-response-time-ms"] = f"{elapsed_ms:.2f}"
+        return response
+
+    # ---- auth dependency (team scoping) -----------------------------------
+    require_team = build_team_dependency(get_db)
+
     # ------------------------------------------------------------------ pages
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def landing(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
             request, "index.html", {"title": "LabFlow"}
         )
 
-    @app.get("/app", response_class=HTMLResponse)
+    @app.get("/app", response_class=HTMLResponse, include_in_schema=False)
     def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-        meetings = list(
-            db.execute(
-                select(models.Meeting).order_by(models.Meeting.occurred_at.desc())
-            ).scalars()
-        )
-        open_tasks = services.list_open_tasks(db)
+        # The dashboard always shows the bootstrap team in single-team mode,
+        # or the team identified by header in auth-enabled mode (best effort
+        # — pages don't enforce auth so users get a friendly empty view).
+        team = None
+        if not settings.auth_enabled:
+            team = db.execute(
+                select(models.Team).where(models.Team.slug == settings.bootstrap_team)
+            ).scalar_one_or_none()
+        meetings = []
+        open_tasks = []
+        if team is not None:
+            meetings = list(
+                db.execute(
+                    select(models.Meeting)
+                    .where(models.Meeting.team_id == team.id)
+                    .order_by(models.Meeting.occurred_at.desc())
+                ).scalars()
+            )
+            open_tasks = services.list_open_tasks(db, team_id=team.id)
         return TEMPLATES.TemplateResponse(
             request,
             "dashboard.html",
@@ -78,13 +178,12 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.get("/meetings/{meeting_id}/review", response_class=HTMLResponse)
-    def review(
-        meeting_id: int, request: Request, db: Session = Depends(get_db)
-    ) -> HTMLResponse:
+    @app.get("/meetings/{meeting_id}/review", response_class=HTMLResponse,
+             include_in_schema=False)
+    def review(meeting_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         meeting = db.get(models.Meeting, meeting_id)
         if meeting is None:
-            raise HTTPException(404, "meeting not found")
+            raise NotFoundError("meeting not found")
         return TEMPLATES.TemplateResponse(
             request,
             "review.html",
@@ -92,38 +191,46 @@ def create_app() -> FastAPI:
         )
 
     # ----------------------------------------------------------- meeting API
-    @app.post("/api/meetings", response_model=MeetingOut)
-    def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db)) -> MeetingOut:
-        if len(payload.transcript) + len(payload.notes) > MAX_TRANSCRIPT_BYTES:
-            raise HTTPException(413, "transcript + notes exceed size limit")
+    @app.post("/api/meetings", response_model=MeetingOut, status_code=201)
+    def create_meeting(
+        payload: MeetingCreate,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> MeetingOut:
+        if len(payload.transcript) + len(payload.notes) > settings.max_transcript_bytes:
+            raise PayloadTooLargeError("transcript + notes exceed size limit")
         meeting = models.Meeting(
+            team_id=team.id,
             title=payload.title,
             meeting_type=payload.meeting_type,
             transcript=payload.transcript,
             notes=payload.notes,
-            occurred_at=payload.occurred_at or datetime.utcnow(),
+            occurred_at=payload.occurred_at or now_utc().replace(tzinfo=None),
         )
         db.add(meeting)
         db.flush()
         if payload.transcript or payload.notes:
-            result = extract(payload.transcript + "\n" + payload.notes,
-                             reference=meeting.occurred_at)
+            result = extract(
+                payload.transcript + "\n" + payload.notes, reference=meeting.occurred_at
+            )
             services.persist_extraction(db, meeting, result)
         return MeetingOut.model_validate(meeting)
 
-    @app.post("/api/meetings/upload", response_model=MeetingOut)
+    @app.post("/api/meetings/upload", response_model=MeetingOut, status_code=201)
     async def upload_meeting(
         title: str = Form(...),
         meeting_type: str = Form("standup"),
         transcript_file: UploadFile | None = None,
         notes: str = Form(""),
         db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
     ) -> MeetingOut:
         transcript_bytes = await transcript_file.read() if transcript_file else b""
-        if len(transcript_bytes) > MAX_TRANSCRIPT_BYTES:
-            raise HTTPException(413, "transcript exceeds size limit")
+        if len(transcript_bytes) > settings.max_transcript_bytes:
+            raise PayloadTooLargeError("transcript exceeds size limit")
         transcript = transcript_bytes.decode("utf-8", errors="replace")
         meeting = models.Meeting(
+            team_id=team.id,
             title=title,
             meeting_type=meeting_type,
             transcript=transcript,
@@ -135,75 +242,146 @@ def create_app() -> FastAPI:
         services.persist_extraction(db, meeting, result)
         return MeetingOut.model_validate(meeting)
 
-    @app.post("/api/meetings/{meeting_id}/extract", response_model=MeetingOut)
-    def reextract(meeting_id: int, db: Session = Depends(get_db)) -> MeetingOut:
+    def _get_team_meeting(db: Session, meeting_id: int, team: models.Team) -> models.Meeting:
         meeting = db.get(models.Meeting, meeting_id)
-        if meeting is None:
-            raise HTTPException(404, "meeting not found")
+        if meeting is None or meeting.team_id != team.id:
+            raise NotFoundError("meeting not found")
+        return meeting
+
+    @app.post("/api/meetings/{meeting_id}/extract", response_model=MeetingOut)
+    def reextract(
+        meeting_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> MeetingOut:
+        meeting = _get_team_meeting(db, meeting_id, team)
         if meeting.finalized:
-            raise HTTPException(400, "meeting already finalized")
+            raise ConflictError("meeting already finalized")
         result = extract(meeting.transcript + "\n" + meeting.notes,
                          reference=meeting.occurred_at)
         services.persist_extraction(db, meeting, result)
         return MeetingOut.model_validate(meeting)
 
     @app.post("/api/meetings/{meeting_id}/finalize", response_model=MeetingOut)
-    def finalize(meeting_id: int, db: Session = Depends(get_db)) -> MeetingOut:
-        meeting = db.get(models.Meeting, meeting_id)
-        if meeting is None:
-            raise HTTPException(404, "meeting not found")
+    def finalize(
+        meeting_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> MeetingOut:
+        meeting = _get_team_meeting(db, meeting_id, team)
         meeting.finalized = True
         db.flush()
         return MeetingOut.model_validate(meeting)
 
+    @app.get("/api/meetings", response_model=PaginatedMeetings)
+    def list_meetings(
+        limit: int | None = None,
+        offset: int = 0,
+        meeting_type: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> PaginatedMeetings:
+        size = _clamp_page_size(limit)
+        offset = max(offset, 0)
+        stmt = select(models.Meeting).where(models.Meeting.team_id == team.id)
+        if meeting_type:
+            stmt = stmt.where(models.Meeting.meeting_type == meeting_type)
+        # cheap count via a separate query — adequate for MVP scale.
+        from sqlalchemy import func as sa_func
+        count_stmt = select(sa_func.count()).select_from(stmt.subquery())
+        total = db.execute(count_stmt).scalar_one()
+        rows = list(
+            db.execute(
+                stmt.order_by(models.Meeting.occurred_at.desc())
+                .offset(offset)
+                .limit(size)
+            ).scalars()
+        )
+        return PaginatedMeetings(
+            items=[MeetingOut.model_validate(m) for m in rows],
+            page=PageMeta(total=total, limit=size, offset=offset),
+        )
+
     @app.get("/api/meetings/{meeting_id}/export.json")
-    def export_json(meeting_id: int, db: Session = Depends(get_db)) -> JSONResponse:
-        meeting = db.get(models.Meeting, meeting_id)
-        if meeting is None:
-            raise HTTPException(404, "meeting not found")
+    def export_json(
+        meeting_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> JSONResponse:
+        meeting = _get_team_meeting(db, meeting_id, team)
         return JSONResponse(exports.meeting_to_dict(meeting))
 
     @app.get("/api/meetings/{meeting_id}/export.md", response_class=PlainTextResponse)
-    def export_md(meeting_id: int, db: Session = Depends(get_db)) -> str:
-        meeting = db.get(models.Meeting, meeting_id)
-        if meeting is None:
-            raise HTTPException(404, "meeting not found")
+    def export_md(
+        meeting_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> str:
+        meeting = _get_team_meeting(db, meeting_id, team)
         return exports.meeting_to_markdown(meeting)
 
     # ----------------------------------------------------------- task API
-    @app.get("/api/tasks", response_model=List[TaskOut])
-    def list_tasks(db: Session = Depends(get_db)) -> List[TaskOut]:
-        tasks = list(db.execute(select(models.Task)).scalars())
-        return [TaskOut.model_validate(t) for t in tasks]
+    @app.get("/api/tasks", response_model=PaginatedTasks)
+    def list_tasks(
+        limit: int | None = None,
+        offset: int = 0,
+        status: str | None = None,
+        owner: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> PaginatedTasks:
+        size = _clamp_page_size(limit)
+        offset = max(offset, 0)
+        stmt = select(models.Task).where(models.Task.team_id == team.id)
+        if status:
+            stmt = stmt.where(models.Task.status == status)
+        if owner:
+            stmt = (
+                stmt.join(models.Owner, models.Task.owner_id == models.Owner.id)
+                    .where(models.Owner.handle == owner)
+            )
+        from sqlalchemy import func as sa_func
+        total = db.execute(select(sa_func.count()).select_from(stmt.subquery())).scalar_one()
+        rows = list(
+            db.execute(
+                stmt.order_by(models.Task.id).offset(offset).limit(size)
+            ).scalars()
+        )
+        return PaginatedTasks(
+            items=[TaskOut.model_validate(t) for t in rows],
+            page=PageMeta(total=total, limit=size, offset=offset),
+        )
 
     @app.patch("/api/tasks/{task_id}", response_model=TaskOut)
     def update_task(
         task_id: int,
-        payload: dict,
+        payload: TaskUpdate,
         db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
     ) -> TaskOut:
         task = db.get(models.Task, task_id)
-        if task is None:
-            raise HTTPException(404, "task not found")
-        allowed = {"title", "description", "status", "due_date", "uncertainty"}
-        for k, v in payload.items():
-            if k not in allowed:
-                raise HTTPException(400, f"field {k!r} is not editable")
-            if k == "due_date" and isinstance(v, str):
-                v = datetime.fromisoformat(v) if v else None
-            if k == "status" and v == "done" and task.status != "done":
-                task.closed_at = datetime.utcnow()
-            setattr(task, k, v)
+        if task is None or task.team_id != team.id:
+            raise NotFoundError("task not found")
+        data: dict[str, Any] = payload.model_dump(exclude_unset=True)
+        for key, value in data.items():
+            if key == "status" and value == "done" and task.status != "done":
+                task.closed_at = now_utc().replace(tzinfo=None)
+            setattr(task, key, value)
         db.flush()
         return TaskOut.model_validate(task)
 
     # ------------------------------------------------------------ evidence
-    @app.post("/api/evidence", response_model=EvidenceOut)
-    def add_evidence(payload: EvidenceCreate, db: Session = Depends(get_db)) -> EvidenceOut:
+    @app.post("/api/evidence", response_model=EvidenceOut, status_code=201)
+    def add_evidence(
+        payload: EvidenceCreate,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> EvidenceOut:
         task = db.get(models.Task, payload.task_id)
-        if task is None:
-            raise HTTPException(404, "task not found")
+        if task is None or task.team_id != team.id:
+            raise NotFoundError("task not found")
         ev = models.Evidence(
+            team_id=team.id,
             task=task,
             kind=payload.kind,
             uri=payload.uri,
@@ -216,12 +394,23 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------ digest
     @app.get("/api/digest/weekly", response_class=PlainTextResponse)
-    def weekly_digest(db: Session = Depends(get_db)) -> str:
-        return digest_mod.build_weekly_digest(db).to_markdown()
+    def weekly_digest(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> str:
+        return digest_mod.build_weekly_digest(db, team_id=team.id).to_markdown()
 
-    @app.get("/healthz")
+    # ------------------------------------------------------------ health
+    @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
-        return {"ok": True}
+        return {"ok": True, "version": "0.2.0"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz(db: Session = Depends(get_db)) -> dict:
+        # Verify the DB is reachable.
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        return {"ready": True}
 
     return app
 

@@ -1,10 +1,14 @@
 """SQLAlchemy ORM models for LabFlow's decision/task graph.
 
 The schema is intentionally normalized so that:
+  * every entity belongs to a ``Team`` (workspace) — multi-tenancy is
+    enforced at the row level.
   * meetings own decisions, tasks, experiments, assumptions, and blockers
   * tasks reference an owner and may depend on other tasks (DAG)
   * evidence items attach to tasks and drive automatic completion
   * decisions persist across meetings, forming a long-term decision graph
+  * an ``AuditEvent`` row is appended for every meaningful state change so
+    the system has a queryable history.
 """
 from __future__ import annotations
 
@@ -13,18 +17,21 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
+    Index,
+    Integer,
     String,
     Table,
-    Column,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .time_utils import now_utc
 
 
 # ---------------------------------------------------------------------------
@@ -39,13 +46,52 @@ task_dependency = Table(
 
 
 # ---------------------------------------------------------------------------
+# Tenancy
+# ---------------------------------------------------------------------------
+class Team(Base):
+    """A workspace. All tenant-scoped data has a ``team_id`` FK to this row."""
+
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ApiKey(Base):
+    """A long-lived API key for a :class:`Team`. Plaintext is never stored."""
+
+    __tablename__ = "api_keys"
+    __table_args__ = (Index("ix_api_keys_team", "team_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(128))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    team: Mapped["Team"] = relationship()
+
+
+# ---------------------------------------------------------------------------
 # Core entities
 # ---------------------------------------------------------------------------
 class Owner(Base):
+    """A person referenced in transcripts. Scoped to a team."""
+
     __tablename__ = "owners"
+    __table_args__ = (
+        UniqueConstraint("team_id", "handle", name="uq_owners_team_handle"),
+        Index("ix_owners_team", "team_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    handle: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    handle: Mapped[str] = mapped_column(String(64), index=True)
     display_name: Mapped[str] = mapped_column(String(128))
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
@@ -54,15 +100,19 @@ class Owner(Base):
 
 class Meeting(Base):
     __tablename__ = "meetings"
+    __table_args__ = (
+        Index("ix_meetings_team_occurred_at", "team_id", "occurred_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(255))
     meeting_type: Mapped[str] = mapped_column(String(64), default="standup")
-    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     transcript: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     finalized: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
     decisions: Mapped[list["Decision"]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan"
@@ -83,8 +133,10 @@ class Meeting(Base):
 
 class Decision(Base):
     __tablename__ = "decisions"
+    __table_args__ = (Index("ix_decisions_team", "team_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     statement: Mapped[str] = mapped_column(Text)
     rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -92,26 +144,31 @@ class Decision(Base):
     superseded_by_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("decisions.id"), nullable=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="decisions")
 
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        Index("ix_tasks_team_status", "team_id", "status"),
+        Index("ix_tasks_due_date", "due_date"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     owner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("owners.id"), nullable=True)
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="open")  # open|in_progress|done|cancelled
-    kind: Mapped[str] = mapped_column(String(32), default="task")  # task|code|experiment|review
-    uncertainty: Mapped[float] = mapped_column(Float, default=0.0)  # 0..1
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    kind: Mapped[str] = mapped_column(String(32), default="task")
+    uncertainty: Mapped[float] = mapped_column(Float, default=0.0)
     confidence: Mapped[float] = mapped_column(Float, default=0.8)
     source_span: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="tasks")
@@ -130,17 +187,19 @@ class Task(Base):
 
 class Experiment(Base):
     __tablename__ = "experiments"
+    __table_args__ = (Index("ix_experiments_team", "team_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
     hypothesis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     method: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    metrics: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # CSV of metric names
+    metrics: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     dataset: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="proposed")
     owner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("owners.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="experiments")
     owner: Mapped[Optional["Owner"]] = relationship()
@@ -150,9 +209,10 @@ class Assumption(Base):
     __tablename__ = "assumptions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     statement: Mapped[str] = mapped_column(Text)
-    risk: Mapped[str] = mapped_column(String(16), default="medium")  # low|medium|high
+    risk: Mapped[str] = mapped_column(String(16), default="medium")
     validated: Mapped[bool] = mapped_column(Boolean, default=False)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="assumptions")
@@ -162,6 +222,7 @@ class Blocker(Base):
     __tablename__ = "blockers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     description: Mapped[str] = mapped_column(Text)
     blocked_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tasks.id"), nullable=True)
@@ -171,23 +232,104 @@ class Blocker(Base):
 
 
 class Evidence(Base):
-    """An artifact that may verify completion of a task.
-
-    `kind` is one of: commit, doc, eval, checklist, link.
-    `verified` is set when the verification engine matches the evidence to the
-    task's keywords or owner.
-    """
+    """An artifact that may verify completion of a task."""
 
     __tablename__ = "evidence"
-    __table_args__ = (UniqueConstraint("task_id", "uri", name="uq_evidence_task_uri"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "uri", name="uq_evidence_task_uri"),
+        Index("ix_evidence_team", "team_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     kind: Mapped[str] = mapped_column(String(32))
     uri: Mapped[str] = mapped_column(String(512))
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     score: Mapped[float] = mapped_column(Float, default=0.0)
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
     task: Mapped["Task"] = relationship(back_populates="evidence")
+
+
+# ---------------------------------------------------------------------------
+# v0.3 — jobs, audit, webhooks
+# ---------------------------------------------------------------------------
+class Job(Base):
+    """Background job tracking row.
+
+    Used by the in-process worker for asynchronous extraction and other
+    long-running operations. The state machine is:
+
+        queued → running → (completed | failed | cancelled)
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_team_status", "team_id", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
+    result: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+
+
+class AuditEvent(Base):
+    """Append-only audit row written for every meaningful state transition."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_team_created", "team_id", "created_at"),
+        Index("ix_audit_entity", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    actor: Mapped[str] = mapped_column(String(128), default="system")
+    action: Mapped[str] = mapped_column(String(64))
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class WebhookSubscription(Base):
+    """Outbound webhook subscription for a team."""
+
+    __tablename__ = "webhook_subscriptions"
+    __table_args__ = (Index("ix_webhooks_team", "team_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    url: Mapped[str] = mapped_column(String(512))
+    event: Mapped[str] = mapped_column(String(64))  # "*" matches all events
+    secret: Mapped[str] = mapped_column(String(128))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class WebhookDelivery(Base):
+    """Record of one outbound webhook delivery attempt."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("webhook_subscriptions.id", ondelete="CASCADE")
+    )
+    event: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)
+    status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+

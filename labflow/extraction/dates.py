@@ -6,10 +6,12 @@ produce stable results regardless of when the code runs.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta, date
 from typing import Optional
 
 from dateutil import parser as _du_parser
+
+from ..time_utils import now_utc
 
 WEEKDAYS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -77,19 +79,22 @@ def parse_due_date(text: str, reference: Optional[datetime] = None) -> Optional[
     """
     if not text:
         return None
-    ref_dt = reference or datetime.utcnow()
-    ref = ref_dt.date()
+    ref_dt = reference or now_utc()
+    # Make ref_dt naive for default substitution because dateutil compares
+    # tz-aware vs naive inconsistently. We restore tz on the way out.
+    naive_ref = ref_dt.replace(tzinfo=None) if ref_dt.tzinfo is not None else ref_dt
+    ref = naive_ref.date()
 
     # Try absolute forms first — they are the most precise.
     for pat in _ABSOLUTE_PATTERNS:
         m = pat.search(text)
         if m:
             try:
-                parsed = _du_parser.parse(m.group(1), default=ref_dt, fuzzy=False)
+                parsed = _du_parser.parse(m.group(1), default=naive_ref, fuzzy=False)
             except (ValueError, OverflowError):
                 continue
             # If only date provided, default to EOD.
-            if parsed.hour == ref_dt.hour and parsed.minute == ref_dt.minute and parsed.second == ref_dt.second:
+            if parsed.hour == naive_ref.hour and parsed.minute == naive_ref.minute and parsed.second == naive_ref.second:
                 parsed = _eod(parsed.date())
             return parsed
 
