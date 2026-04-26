@@ -1,0 +1,19 @@
+apiVersion: v2
+name: labflow
+description: Meeting → execution OS for research and technical teams
+type: application
+version: 0.7.0
+appVersion: "0.7.0"
+home: https://github.com/mariam-oss-eng/labflow
+sources:
+  - https://github.com/mariam-oss-eng/labflow
+maintainers:
+  - name: LabFlow contributors
+    url: https://github.com/mariam-oss-eng/labflow
+keywords:
+  - meetings
+  - decisions
+  - tasks
+  - research
+  - graphql
+icon: https://raw.githubusercontent.com/mariam-oss-eng/labflow/main/static/labflow-icon.svg

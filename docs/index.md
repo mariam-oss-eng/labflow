@@ -9,10 +9,20 @@ read the [Architecture overview](architecture.md) and the
 
 ## What's new
 
+* **v0.7** — Bidirectional **WebSocket** at `/ws`, read-only **GraphQL**
+  at `/graphql`, **OpenTelemetry** auto-instrumentation, **PostgreSQL
+  full-text search**, distributed **worker leader-lock** for HA, official
+  **Python SDK** (`labflow_client`), and a **Helm chart** for Kubernetes.
+* **v0.6** — Threaded **comments** + emoji **reactions**, **saved
+  searches**, **analytics** endpoint (cycle time, throughput, weekly
+  trend), **iCalendar** feed, **AI summary** (TextRank + LLM hook),
+  **HTML email digest**, per-user notification prefs.
 * **v0.5** — RBAC, encryption at rest, SSE live updates, plugin loader,
-  GDPR export/erase. See the [changelog](changelog.md).
+  GDPR export/erase.
 * **v0.4** — Hybrid keyword + semantic search, decision graph with
   Mermaid renderer, rate limiting, idempotency, Slack notifier.
+
+See the [changelog](changelog.md) for the full history.
 
 ## Five-minute tour
 

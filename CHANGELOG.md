@@ -3,6 +3,78 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-04-26
+### Added — Realtime, GraphQL & Observability
+- **WebSocket** at `/ws` with bidirectional protocol: `subscribe` /
+  `unsubscribe` (supports `task.*`-style prefix wildcards), `ping`/`pong`,
+  and a 20s server heartbeat. Same in-process hub feeds both SSE and WS,
+  so all clients see the same event stream.
+- **Read-only GraphQL** at `POST /graphql`. Hand-rolled tokenizer +
+  recursive-descent parser, resolvers for `team / tasks / decisions /
+  meetings / comments / analytics`, and a `__schema` introspection field.
+  Zero new runtime dependencies.
+- **OpenTelemetry** auto-instrumentation: `LABFLOW_OTEL_ENABLED=true`
+  sets up TracerProvider + MeterProvider, instruments FastAPI and
+  SQLAlchemy when the SDK is importable. The `otel.span()` context manager
+  is a no-op when OTEL is absent so call sites don't need feature flags.
+- **PostgreSQL FTS backend** for `/api/search`. Auto-detected via the
+  SQLAlchemy dialect; uses `to_tsvector @@ to_tsquery` with `ts_rank`
+  ordering when on Postgres, falls back to the existing `ILIKE` path on
+  SQLite. No schema change required (operators add a GIN index in prod).
+- **Distributed worker leader-lock**: a new `worker_locks` table holds
+  a leased `(name, owner, expires_at)` row so multiple API replicas can
+  run safely behind a load balancer with the worker active on at most
+  one. Heartbeats refresh the lease; a crashed leader is stolen after
+  TTL.
+- **Official Python SDK** in the `labflow_client` package. Sync +
+  async clients, uses `httpx` when installed and falls back to stdlib
+  `urllib`. Typed methods for meetings, tasks, evidence, search,
+  comments/reactions, analytics, GraphQL, and SDK-friendly
+  `Idempotency-Key` plumbing.
+- **Helm chart** under `deploy/helm/labflow/` for HA deployment on
+  Kubernetes (multi-replica API + Postgres + leader-elected worker).
+- **OpenAPI bumped to 0.7.0**, every new route tagged
+  `collab / saved-searches / analytics / calendar / graphql`.
+
+### Changed
+- `__version__ = "0.7.0"`. Healthz reports the same.
+
+## [0.6.0] — 2026-04-26
+### Added — Collaboration & Insights
+- **Threaded comments** on decisions and tasks via `GET/POST /api/comments`
+  (and soft-delete via `DELETE /api/comments/{id}`). Replies form a tree
+  through `parent_id`; the API returns flat rows and a nested view.
+- **Emoji reactions** via `POST /api/reactions` with toggle semantics —
+  posting the same emoji twice removes it. Counts are returned alongside
+  the toggle response so the UI doesn't need a follow-up GET.
+- **Saved searches** (`GET/POST/DELETE /api/saved-searches`,
+  `GET /api/saved-searches/{slug}/run`). Auto-slugified names,
+  alpha+filters overrides, and pinning for the dashboard sidebar.
+- **Analytics endpoint** at `GET /api/analytics?days=N` returning
+  meetings, decisions, tasks-opened/-closed, cycle-time p50/p90,
+  completion rate, blocker rate, top owners, and an 8-week
+  opened/closed trend (the dashboard renders the latter as a sparkline).
+- **iCalendar feed** at `GET /api/calendar.ics`. Hand-rolled RFC 5545
+  output (escapes commas/semicolons/backslashes/CRLF, line folding to
+  75 octets) so any calendar client can subscribe to upcoming task due
+  dates.
+- **AI summary** at `GET /api/meetings/{id}/summary?max_sentences=N`.
+  Default backend is **TextRank-lite** (sentence similarity graph +
+  power-iteration PageRank) — pure Python, deterministic, offline. Set
+  `LABFLOW_SUMMARY_CALLABLE=pkg.mod:fn` to plug in any LLM.
+- **HTML email digest** at `GET /api/digest/weekly.html` using inline
+  styles (the only thing that survives Gmail's `<style>` stripping) and
+  table-free markup that renders well on mobile.
+- **Per-API-key notification preferences** via `GET/PUT
+  /api/me/notifications`. Cadence (`off|daily|weekly`), email, and a
+  mute list of event types.
+- **Audit + SSE coverage** for every collaboration write so existing
+  dashboards see comment activity in real time without a code change.
+
+### Changed
+- `__version__ = "0.6.0"`. New OpenAPI tags `collab / saved-searches /
+  analytics / calendar`.
+
 ## [0.5.0] — 2026-04-25
 ### Added — Enterprise & polish
 - **Role-based access control.** New `memberships` table maps API keys to a

@@ -86,6 +86,16 @@ nav:
           - "0001 · Hybrid search ranking": adr/0001-hybrid-search.md
           - "0002 · Idempotency middleware": adr/0002-idempotency-middleware.md
           - "0003 · Encryption at rest": adr/0003-encryption-at-rest.md
+          - "0004 · Collaboration model": adr/0004-collaboration-model.md
+          - "0005 · WebSocket vs SSE": adr/0005-websocket-vs-sse.md
+          - "0006 · Hand-rolled GraphQL": adr/0006-hand-rolled-graphql.md
   - Reference:
       - REST API: api.md
+      - GraphQL: graphql.md
+      - Realtime (SSE + WebSocket): realtime.md
+      - Analytics: analytics.md
+      - Collaboration: collaboration.md
+      - Python SDK: sdk.md
+      - Observability: observability.md
+      - Deployment (Docker + Helm): deployment.md
   - Changelog: changelog.md

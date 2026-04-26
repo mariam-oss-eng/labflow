@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import audit as audit_mod
 from . import digest as digest_mod
+from . import __version__
 from . import (
     analytics as analytics_mod,
     calendar_feed,
@@ -279,7 +280,7 @@ def create_app() -> FastAPI:
                 "title": "LabFlow — Dashboard",
                 "meetings": meetings,
                 "open_tasks": open_tasks,
-                "version": "0.5",
+                "version": __version__,
             },
         )
 
@@ -297,7 +298,7 @@ def create_app() -> FastAPI:
             request,
             "review.html",
             {"title": meeting.title, "meeting": meeting,
-             "mermaid": mermaid, "version": "0.5"},
+             "mermaid": mermaid, "version": __version__},
         )
 
     @app.get("/app/search", response_class=HTMLResponse, include_in_schema=False)

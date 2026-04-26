@@ -23,6 +23,12 @@ import hashlib
 import hmac
 import json
 import logging
+
+
+def _lf_version() -> str:
+    # Resolve lazily so tests / callers can override package version.
+    from . import __version__
+    return __version__
 import urllib.error
 import urllib.request
 from typing import Any, Iterable
@@ -131,7 +137,7 @@ def deliver_pending(
                 body_str = d.payload
             body = body_str.encode("utf-8")
             headers = {"Content-Type": "application/json",
-                       "User-Agent": "LabFlow/0.5"}
+                       "User-Agent": f"LabFlow/{_lf_version()}"}
         else:
             body = d.payload.encode("utf-8")
             signature = sign(body, sub.secret or get_settings().webhook_signing_secret)
@@ -139,7 +145,7 @@ def deliver_pending(
                 "Content-Type": "application/json",
                 "X-LabFlow-Event": d.event,
                 "X-LabFlow-Signature-256": signature,
-                "User-Agent": "LabFlow/0.5",
+                "User-Agent": f"LabFlow/{_lf_version()}",
             }
         try:
             status, resp_body = poster(sub.url, body, headers)

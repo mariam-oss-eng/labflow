@@ -1,0 +1,90 @@
+# Default values for the LabFlow Helm chart.
+# Production-grade defaults suitable for a 3-replica HA install behind
+# an Ingress controller. Override per-environment in your own values
+# file.
+
+image:
+  repository: ghcr.io/mariam-oss-eng/labflow
+  tag: "0.7.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+# The worker shares the API image; only one replica acquires the
+# leader-lock at a time (see labflow.worker_lock). We still run >=2
+# replicas so failover is fast.
+worker:
+  replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  # SSE/WebSocket need session affinity so a long-lived connection
+  # doesn't bounce across pods on each event.
+  sessionAffinity: ClientIP
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: labflow.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 3
+    periodSeconds: 5
+
+postgres:
+  # Required in production. Format: postgres://user:pass@host:5432/db
+  url: ""
+
+env:
+  LABFLOW_AUTH_ENABLED: "true"
+  LABFLOW_RATE_LIMIT_PER_MINUTE: "1200"
+  LABFLOW_EMBEDDING_DIM: "256"
+  LABFLOW_SEARCH_ALPHA: "0.5"
+
+# Mounted as a Secret; referenced via secretRef in the Deployment env.
+secrets:
+  # urlsafe base64 Fernet key. Leave empty to disable encryption at rest.
+  dataKey: ""
+  # HMAC-SHA256 secret used to sign outbound webhooks.
+  webhookSigningSecret: ""
+
+otel:
+  enabled: false
+  exporterOtlpEndpoint: "http://otel-collector:4318"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

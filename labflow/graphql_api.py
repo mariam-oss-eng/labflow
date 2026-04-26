@@ -25,9 +25,12 @@ the same.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+
+log = logging.getLogger("labflow.graphql")
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,13 +40,20 @@ from . import collab as collab_mod
 from . import models, services
 
 # --------------------------------------------------------------------- parser
+# NOTE on the string token pattern: the two alternatives never overlap
+# (one matches a non-backslash non-quote char; the other matches a
+# backslash followed by exactly one char), so the regex is linear-time
+# in practice. We additionally cap input size in ``execute`` below to
+# eliminate any ReDoS surface from pathological inputs.
 _TOKEN = re.compile(
     r'\s+'
-    r'|(?P<str>"(?:[^"\\]|\\.)*")'
+    r'|(?P<str>"(?:[^"\\]+|\\.)*")'
     r'|(?P<int>-?\d+)'
     r'|(?P<word>[A-Za-z_][A-Za-z0-9_]*)'
     r'|(?P<punc>[{}():,])'
 )
+
+MAX_QUERY_BYTES = 16 * 1024  # plenty for hand-written queries
 
 
 @dataclass
@@ -220,10 +230,16 @@ def _meeting_dict(m: models.Meeting) -> dict:
 
 def execute(sess: Session, *, team_id: int, query: str) -> dict:
     """Run a GraphQL query and return ``{"data": ..., "errors": [...]}``."""
+    if not isinstance(query, str):
+        return {"data": None, "errors": [{"message": "query must be a string"}]}
+    if len(query) > MAX_QUERY_BYTES:
+        return {"data": None,
+                "errors": [{"message": f"query exceeds {MAX_QUERY_BYTES} bytes"}]}
     try:
         fields = parse(query)
     except Exception as exc:
-        return {"data": None, "errors": [{"message": f"parse error: {exc}"}]}
+        # Don't echo full exception detail (it can leak file paths / internals).
+        return {"data": None, "errors": [{"message": f"parse error: {type(exc).__name__}"}]}
 
     data: dict[str, Any] = {}
     errors: list[dict] = []
@@ -286,5 +302,8 @@ def execute(sess: Session, *, team_id: int, query: str) -> dict:
             else:
                 errors.append({"message": f"unknown field: {f.name!r}"})
         except Exception as exc:
-            errors.append({"message": f"{f.name}: {exc}"})
+            # Log the full error for operators but only return the
+            # exception type to the client to avoid stack-trace exposure.
+            log.warning("graphql resolver error in %r", f.name, exc_info=True)
+            errors.append({"message": f"{f.name}: {type(exc).__name__}"})
     return {"data": data, "errors": errors}
