@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -18,17 +18,26 @@ from sqlalchemy.orm import Session
 from . import audit as audit_mod
 from . import digest as digest_mod
 from . import (
+    analytics as analytics_mod,
+    calendar_feed,
+    collab as collab_mod,
     exports,
     graph as graph_mod,
+    graphql_api,
     jobs as jobs_mod,
     metrics,
     models,
+    notif_prefs,
+    otel,
     retention as retention_mod,
+    saved_searches,
     search as search_mod,
     services,
     sse as sse_mod,
+    summary as summary_mod,
     verification,
     webhooks as webhooks_mod,
+    ws as ws_mod,
 )
 from .auth import build_team_dependency, ensure_bootstrap_team, require_role
 from .config import get_settings
@@ -54,6 +63,44 @@ from .schemas import (
     TaskUpdate,
 )
 from .time_utils import now_utc
+
+# v0.6 / v0.7 request bodies — defined at module scope so FastAPI's
+# dependency-injection machinery recognizes them as pydantic models
+# (locally-scoped subclasses inside create_app() get treated as query
+# params, which surfaces as "Field required" 422s).
+from pydantic import BaseModel as _BM
+
+
+class _CommentIn(_BM):
+    entity_type: str
+    entity_id: int
+    body: str
+    parent_id: int | None = None
+
+
+class _ReactionIn(_BM):
+    entity_type: str
+    entity_id: int
+    emoji: str
+
+
+class _SavedSearchIn(_BM):
+    name: str
+    query: str
+    slug: str | None = None
+    alpha: float | None = None
+    filters: dict | None = None
+    pinned: bool = False
+
+
+class _NotifPrefIn(_BM):
+    digest_cadence: str | None = None
+    email: str | None = None
+    muted_events: list[str] | None = None
+
+
+class _GraphQLIn(_BM):
+    query: str
 
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
@@ -95,23 +142,29 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.5.0",
+        version="0.7.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
-            "experiments, and evidence."
+            "experiments, and evidence. v0.7 adds GraphQL, WebSockets, "
+            "OpenTelemetry, Postgres FTS, and an official Python SDK."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
         openapi_tags=[
-            {"name": "meetings", "description": "Upload, extract, finalize, export."},
+            {"name": "meetings", "description": "Upload, extract, finalize, export, summarize."},
             {"name": "tasks", "description": "Action items with owners, deadlines, evidence."},
             {"name": "evidence", "description": "Artifacts that verify task completion."},
             {"name": "search", "description": "Hybrid keyword + semantic search."},
             {"name": "graph", "description": "Decision graph with supersession edges."},
             {"name": "jobs", "description": "Background job introspection."},
+            {"name": "collab", "description": "Threaded comments and emoji reactions (v0.6)."},
+            {"name": "analytics", "description": "Cycle time, throughput, completion rate (v0.6)."},
+            {"name": "calendar", "description": "iCalendar feed of upcoming task due dates (v0.6)."},
+            {"name": "saved-searches", "description": "Named, persisted search queries (v0.6)."},
+            {"name": "graphql", "description": "Read-only GraphQL endpoint (v0.7)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
-            {"name": "system", "description": "Health, readiness, metrics, live updates."},
+            {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
     )
 
@@ -119,6 +172,14 @@ def create_app() -> FastAPI:
     # separate `alembic upgrade`. In production, run `alembic upgrade head`
     # before starting and disable this by setting LABFLOW_AUTO_CREATE=false.
     init_db()
+    # Optional OpenTelemetry instrumentation (v0.7).
+    if otel.setup():
+        otel.instrument_fastapi(app)
+        try:
+            from .db import get_engine
+            otel.instrument_sqlalchemy(get_engine())
+        except Exception:  # noqa: BLE001
+            log.debug("otel sqlalchemy hook skipped", exc_info=True)
     # Ensure bootstrap team exists in single-team mode.
     SessionLocal = get_session_factory()
     with SessionLocal() as bootstrap_session:
@@ -764,7 +825,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------ health
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
-        return {"ok": True, "version": "0.5.0"}
+        return {"ok": True, "version": "0.7.0"}
 
     @app.get("/readyz", include_in_schema=False)
     def readyz(db: Session = Depends(get_db)) -> dict:
@@ -773,7 +834,275 @@ def create_app() -> FastAPI:
         db.execute(text("SELECT 1"))
         return {"ready": True}
 
+    # ====================================================================
+    # v0.6 — Collaboration & Insights
+    # ====================================================================
+    def _actor_label(request: Request) -> str:
+        key_id = getattr(request.state, "api_key_id", None)
+        return f"key:{key_id}" if key_id is not None else "system"
+
+    @app.get("/api/comments", tags=["collab"])
+    def list_comments_route(
+        entity_type: str, entity_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = collab_mod.list_comments(
+            db, team_id=team.id,
+            entity_type=entity_type, entity_id=entity_id,
+        )
+        return {"comments": collab_mod.thread_comments(rows)}
+
+    @app.post("/api/comments", status_code=201, tags=["collab"])
+    def create_comment(
+        payload: _CommentIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        c = collab_mod.add_comment(
+            db, team_id=team.id, entity_type=payload.entity_type,
+            entity_id=payload.entity_id, body=payload.body,
+            parent_id=payload.parent_id,
+            actor=_actor_label(request),
+            actor_key_id=getattr(request.state, "api_key_id", None),
+        )
+        return {"id": c.id, "actor": c.actor, "body": c.body,
+                "parent_id": c.parent_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None}
+
+    @app.delete("/api/comments/{comment_id}", tags=["collab"])
+    def delete_comment(
+        comment_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        collab_mod.soft_delete_comment(
+            db, team_id=team.id, comment_id=comment_id,
+            actor=_actor_label(request),
+        )
+        return {"deleted": True}
+
+    @app.post("/api/reactions", tags=["collab"])
+    def toggle_reaction(
+        payload: _ReactionIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        _, added = collab_mod.react(
+            db, team_id=team.id, entity_type=payload.entity_type,
+            entity_id=payload.entity_id, emoji=payload.emoji,
+            actor=_actor_label(request),
+            actor_key_id=getattr(request.state, "api_key_id", None),
+        )
+        counts = collab_mod.reaction_counts(
+            db, team_id=team.id, entity_type=payload.entity_type,
+            entity_id=payload.entity_id,
+        )
+        return {"added": added, "counts": counts}
+
+    @app.get("/api/reactions", tags=["collab"])
+    def get_reactions(
+        entity_type: str, entity_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {
+            "counts": collab_mod.reaction_counts(
+                db, team_id=team.id, entity_type=entity_type, entity_id=entity_id,
+            ),
+        }
+
+    # ----------------------------------------------------- saved searches
+    @app.get("/api/saved-searches", tags=["saved-searches"])
+    def list_saved_searches(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"items": [saved_searches.to_dict(s)
+                          for s in saved_searches.list_for(db, team_id=team.id)]}
+
+    @app.post("/api/saved-searches", status_code=201, tags=["saved-searches"])
+    def create_saved_search(
+        payload: _SavedSearchIn,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        row = saved_searches.create(
+            db, team_id=team.id, name=payload.name, query=payload.query,
+            slug=payload.slug, alpha=payload.alpha, filters=payload.filters,
+            pinned=payload.pinned,
+        )
+        return saved_searches.to_dict(row)
+
+    @app.delete("/api/saved-searches/{slug}", tags=["saved-searches"])
+    def delete_saved_search(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        saved_searches.delete(db, team_id=team.id, slug=slug)
+        return {"deleted": True}
+
+    @app.get("/api/saved-searches/{slug}/run", tags=["saved-searches"])
+    def run_saved_search(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        row = saved_searches.get(db, team_id=team.id, slug=slug)
+        hits = search_mod.search(
+            db, team_id=team.id, query=row.query,
+            limit=50, alpha=row.alpha,
+        )
+        return {
+            "saved_search": saved_searches.to_dict(row),
+            "results": [{"kind": h.kind, "id": h.id, "title": h.title,
+                         "snippet": h.snippet, "score": h.score} for h in hits],
+        }
+
+    # ----------------------------------------------------- analytics
+    @app.get("/api/analytics", tags=["analytics"])
+    def analytics_endpoint(
+        days: int = 30,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return analytics_mod.compute(db, team_id=team.id, days=days).to_dict()
+
+    # ----------------------------------------------------- iCalendar feed
+    @app.get("/api/calendar.ics", tags=["calendar"])
+    def calendar_feed_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> Response:
+        body = calendar_feed.render_team_calendar(db, team_id=team.id)
+        return Response(content=body, media_type="text/calendar; charset=utf-8")
+
+    # ----------------------------------------------------- AI summary
+    @app.get("/api/meetings/{meeting_id}/summary", tags=["meetings"])
+    def meeting_summary(
+        meeting_id: int,
+        max_sentences: int = 5,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        meeting = _get_team_meeting(db, meeting_id, team)
+        text = (meeting.transcript or "") + "\n" + (meeting.notes or "")
+        with otel.span("labflow.summarize", meeting_id=meeting.id):
+            return summary_mod.summarize(text, max_sentences=max(1, min(max_sentences, 20)))
+
+    # ----------------------------------------------------- HTML digest
+    @app.get("/api/digest/weekly.html", tags=["system"])
+    def weekly_digest_html(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        return HTMLResponse(
+            digest_mod.build_weekly_digest(db, team_id=team.id).to_html()
+        )
+
+    # ----------------------------------------------------- notification prefs
+    @app.get("/api/me/notifications", tags=["system"])
+    def get_notif_prefs(
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        key_id = getattr(request.state, "api_key_id", None)
+        if key_id is None:
+            return {"digest_cadence": "weekly", "email": None,
+                    "muted_events": [], "single_team_mode": True}
+        return notif_prefs.to_dict(
+            notif_prefs.get_or_create(db, team_id=team.id, api_key_id=key_id)
+        )
+
+    @app.put("/api/me/notifications", tags=["system"])
+    def update_notif_prefs(
+        payload: _NotifPrefIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        key_id = getattr(request.state, "api_key_id", None)
+        if key_id is None:
+            raise LFValidationError(
+                "notification preferences are per-key; enable LABFLOW_AUTH_ENABLED"
+            )
+        row = notif_prefs.update(
+            db, team_id=team.id, api_key_id=key_id,
+            digest_cadence=payload.digest_cadence,
+            email=payload.email,
+            muted_events=payload.muted_events,
+        )
+        return notif_prefs.to_dict(row)
+
+    # ====================================================================
+    # v0.7 — Realtime, GraphQL, Observability
+    # ====================================================================
+    @app.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket) -> None:
+        """Bidirectional realtime channel.
+
+        In single-team mode connects without auth. When auth is enabled,
+        clients pass the API key as the ``token`` query param (browsers
+        can't easily set headers on WS handshakes).
+        """
+        await websocket.accept()
+        team_id = None
+        try:
+            if not settings.auth_enabled:
+                # bootstrap team
+                SessionLocal = get_session_factory()
+                with SessionLocal() as sess:
+                    team = sess.execute(
+                        select(models.Team).where(models.Team.slug == settings.bootstrap_team)
+                    ).scalar_one_or_none()
+                    team_id = team.id if team else None
+            else:
+                from .auth import hash_api_key
+                token = websocket.query_params.get("token", "")
+                if not token:
+                    await websocket.close(code=4401)
+                    return
+                SessionLocal = get_session_factory()
+                with SessionLocal() as sess:
+                    key = sess.execute(
+                        select(models.ApiKey).where(
+                            models.ApiKey.key_hash == hash_api_key(token),
+                            models.ApiKey.revoked_at.is_(None),
+                        )
+                    ).scalar_one_or_none()
+                    team_id = key.team_id if key else None
+            if team_id is None:
+                await websocket.close(code=4401)
+                return
+            await ws_mod.serve(websocket, team_id=team_id)
+        except WebSocketDisconnect:
+            pass
+        except Exception:  # noqa: BLE001
+            try:
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+
+    @app.post("/graphql", tags=["graphql"])
+    def graphql_endpoint(
+        payload: _GraphQLIn,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        """Read-only GraphQL endpoint. POST a ``{"query": "..."}`` body."""
+        with otel.span("labflow.graphql"):
+            return graphql_api.execute(db, team_id=team.id, query=payload.query)
+
+    @app.get("/graphql/schema", response_class=JSONResponse, tags=["graphql"])
+    def graphql_schema() -> dict:
+        return graphql_api.SCHEMA
+
     return app
+
 
 
 app = create_app()

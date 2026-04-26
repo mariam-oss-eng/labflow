@@ -69,6 +69,76 @@ class WeeklyDigest:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
+    def to_html(self) -> str:
+        """Render an email-friendly HTML digest (inline styles, no JS).
+
+        Inlining styles is the only thing that survives the major email
+        clients (Gmail in particular strips ``<style>`` blocks). We keep
+        the markup tiny and table-free for legibility on mobile.
+        """
+        from html import escape as _e
+
+        def _section(title: str, items: list[str]) -> str:
+            if not items:
+                return ""
+            lis = "".join(f"<li style='margin:.2em 0'>{x}</li>" for x in items)
+            return (
+                f"<h2 style='font-size:16px;color:#0f172a;margin:1.4em 0 .4em'>"
+                f"{_e(title)}</h2>"
+                f"<ul style='padding-left:1.2em;color:#1e293b;font-size:14px'>"
+                f"{lis}</ul>"
+            )
+
+        head = (
+            f"<div style='font-family:-apple-system,Segoe UI,Roboto,"
+            f"sans-serif;max-width:640px;margin:0 auto;padding:24px;"
+            f"color:#0f172a'>"
+            f"<h1 style='font-size:20px;margin:0 0 .25em'>"
+            f"🧪 LabFlow Weekly Digest</h1>"
+            f"<div style='color:#64748b;font-size:13px;margin-bottom:1em'>"
+            f"{self.period_start.date().isoformat()} → "
+            f"{self.period_end.date().isoformat()}</div>"
+            f"<div style='display:flex;gap:18px;flex-wrap:wrap;"
+            f"font-size:13px;color:#334155;background:#f1f5f9;"
+            f"padding:12px 16px;border-radius:10px'>"
+            f"<div><strong>{len(self.meetings)}</strong> meetings</div>"
+            f"<div><strong>{len(self.new_decisions)}</strong> decisions</div>"
+            f"<div><strong>{len(self.closed_tasks)}</strong> closed</div>"
+            f"<div><strong>{len(self.overdue_tasks)}</strong> overdue</div>"
+            f"</div>"
+        )
+        body = "".join([
+            _section("Decisions", [_e(d.statement) for d in self.new_decisions]),
+            _section("Tasks closed", [f"✅ {_e(t.title)}" for t in self.closed_tasks]),
+            _section(
+                "⚠️ Overdue",
+                [
+                    f"@{_e(t.owner.handle if t.owner else 'unassigned')}: {_e(t.title)}"
+                    + (f" <span style='color:#94a3b8'>(due "
+                       f"{t.due_date.date().isoformat()})</span>"
+                       if t.due_date else "")
+                    for t in self.overdue_tasks
+                ],
+            ),
+            _section(
+                "🔎 Needs review",
+                [f"{_e(t.title)} <span style='color:#94a3b8'>"
+                 f"(uncertainty {t.uncertainty:.2f})</span>"
+                 for t in self.high_uncertainty_tasks],
+            ),
+            _section("🚧 Blockers", [_e(b.description) for b in self.open_blockers]),
+            _section("🧪 High-risk assumptions",
+                     [_e(a.statement) for a in self.high_risk_assumptions]),
+        ])
+        foot = (
+            f"<hr style='border:none;border-top:1px solid #e2e8f0;"
+            f"margin:2em 0 1em'>"
+            f"<div style='font-size:12px;color:#94a3b8'>"
+            f"Sent by LabFlow. Manage notifications in your dashboard.</div>"
+            f"</div>"
+        )
+        return head + body + foot
+
 
 def build_weekly_digest(
     sess: Session, now: datetime | None = None, *, team_id: Optional[int] = None

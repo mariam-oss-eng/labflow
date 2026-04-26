@@ -419,3 +419,130 @@ class Membership(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
 
+# ---------------------------------------------------------------------------
+# v0.6 — collaboration & insights
+# ---------------------------------------------------------------------------
+class Comment(Base):
+    """A threaded comment on a decision or task.
+
+    Authorship records the API key id (``actor_key_id``) and a denormalized
+    ``actor`` label so audit trails remain meaningful even if a key is
+    later revoked. Replies form a tree via ``parent_id``.
+    """
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        Index("ix_comments_team_entity", "team_id", "entity_type", "entity_id"),
+        Index("ix_comments_parent", "parent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))     # "decision" | "task"
+    entity_id: Mapped[int] = mapped_column(Integer)
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("comments.id", ondelete="CASCADE"), nullable=True
+    )
+    actor: Mapped[str] = mapped_column(String(128), default="system")
+    actor_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text)
+    edited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class Reaction(Base):
+    """An emoji reaction by an API key on any entity.
+
+    ``(team_id, entity_type, entity_id, emoji, actor_key_id)`` is unique so
+    each user can only react once per emoji per target. ``actor_key_id`` may
+    be NULL in single-team mode; we then dedupe by ``actor`` label instead.
+    """
+
+    __tablename__ = "reactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id", "entity_type", "entity_id", "emoji", "actor",
+            name="uq_reactions_unique",
+        ),
+        Index("ix_reactions_entity", "team_id", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[int] = mapped_column(Integer)
+    emoji: Mapped[str] = mapped_column(String(16))
+    actor: Mapped[str] = mapped_column(String(128), default="system")
+    actor_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class SavedSearch(Base):
+    """A named, persisted search query for a team.
+
+    ``query`` is the literal text submitted to ``/api/search`` and
+    ``alpha``/``filters`` are the optional ranking + filter overrides. Users
+    can pin saved searches to the dashboard sidebar.
+    """
+
+    __tablename__ = "saved_searches"
+    __table_args__ = (
+        UniqueConstraint("team_id", "slug", name="uq_saved_search_team_slug"),
+        Index("ix_saved_search_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    slug: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
+    query: Mapped[str] = mapped_column(Text)
+    alpha: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    filters: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class NotificationPref(Base):
+    """Per-API-key notification preferences (digest cadence, channels, mute).
+
+    A row is auto-created on first read with sensible defaults — operators
+    don't need to backfill.
+    """
+
+    __tablename__ = "notification_prefs"
+    __table_args__ = (
+        UniqueConstraint("api_key_id", name="uq_notif_pref_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"))
+    digest_cadence: Mapped[str] = mapped_column(String(16), default="weekly")  # off|daily|weekly
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    muted_events: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON list
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.7 — distributed worker coordination
+# ---------------------------------------------------------------------------
+class WorkerLock(Base):
+    """A coarse-grained distributed lock used to single-instance the worker.
+
+    A row per ``name`` holds the current owner and an expiry. Acquire = INSERT
+    with conflict-on-update only when expired. Heartbeats extend ``expires_at``.
+    """
+
+    __tablename__ = "worker_locks"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(128))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+

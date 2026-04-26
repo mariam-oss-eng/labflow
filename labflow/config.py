@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # ``python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"``.
     data_key: str = ""
 
+    # --- summary (v0.6) ------------------------------------------------
+    # Optional dotted path "module:fn" used by /api/meetings/{id}/summary.
+    # The callable receives ``(text: str, *, max_sentences: int) -> str``.
+    summary_callable: str = ""
+
+    # --- observability (v0.7) -----------------------------------------
+    otel_enabled: bool = False
+
     # --- webhooks (v0.3) -----------------------------------------------
     webhook_signing_secret: str = ""
     github_webhook_secret: str = ""

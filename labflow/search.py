@@ -29,6 +29,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from . import embedding_store, models
+from . import pg_fts as pg_fts_mod
 from .config import get_settings
 from .embeddings import Vector, cosine, get_embedder
 from .time_utils import now_utc
@@ -106,29 +107,31 @@ def search(
 
     like_clauses = [f"%{tok}%" for tok in q_tokens]
 
-    # --- Candidate sets via LIKE OR semantic top-K -------------------------
-    # We pull lexical candidates with LIKE, plus the top semantic neighbors
-    # so paraphrased matches surface even when no token literally appears.
-    decisions = list(
-        sess.execute(
-            select(models.Decision)
-            .where(models.Decision.team_id == team_id)
-            .where(or_(
-                *[models.Decision.statement.ilike(c) for c in like_clauses],
-                *[models.Decision.rationale.ilike(c) for c in like_clauses],
-            ))
-        ).scalars()
-    )
-    tasks = list(
-        sess.execute(
-            select(models.Task)
-            .where(models.Task.team_id == team_id)
-            .where(or_(
-                *[models.Task.title.ilike(c) for c in like_clauses],
-                *[models.Task.description.ilike(c) for c in like_clauses],
-            ))
-        ).scalars()
-    )
+    # --- Candidate sets via PG-FTS (when available) or LIKE OR semantic top-K
+    pg = pg_fts_mod.maybe_pg_search(sess, team_id=team_id, tokens=q_tokens)
+    if pg is not None:
+        decisions, tasks = pg
+    else:
+        decisions = list(
+            sess.execute(
+                select(models.Decision)
+                .where(models.Decision.team_id == team_id)
+                .where(or_(
+                    *[models.Decision.statement.ilike(c) for c in like_clauses],
+                    *[models.Decision.rationale.ilike(c) for c in like_clauses],
+                ))
+            ).scalars()
+        )
+        tasks = list(
+            sess.execute(
+                select(models.Task)
+                .where(models.Task.team_id == team_id)
+                .where(or_(
+                    *[models.Task.title.ilike(c) for c in like_clauses],
+                    *[models.Task.description.ilike(c) for c in like_clauses],
+                ))
+            ).scalars()
+        )
 
     # Stitch in semantic top-K from the embedding table.
     if query_vec is not None:
