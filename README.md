@@ -4,27 +4,56 @@
 
 **The meeting → execution operating system for research and technical teams.**
 
-[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)](#testing)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.0-6366f1)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0-6366f1)](CHANGELOG.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com)
 [![GraphQL](https://img.shields.io/badge/GraphQL-read--only-e10098)](docs/graphql.md)
 [![WebSocket](https://img.shields.io/badge/WebSocket-bidirectional-2563eb)](docs/realtime.md)
+[![AI Copilot](https://img.shields.io/badge/AI-copilot-ff6b6b)](docs/copilot.md)
+[![Plugins](https://img.shields.io/badge/plugin-marketplace-8b5cf6)](docs/plugins.md)
+[![PWA](https://img.shields.io/badge/PWA-installable-0ea5e9)](docs/pwa.md)
+[![i18n](https://img.shields.io/badge/i18n-en%20%C2%B7%20es%20%C2%B7%20fr-22c55e)](docs/i18n.md)
 [![SDK](https://img.shields.io/badge/Python%20SDK-labflow__client-yellow)](labflow_client/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-optional-425cc7)](docs/observability.md)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-9c27b0)](docs/)
 
 LabFlow turns transcripts, calls, and planning docs into a **typed, queryable
 graph** of decisions, action items, experiments, owners, deadlines, and
-evidence of completion — with an audit log, webhooks, live search,
-realtime updates, GraphQL, an iCalendar feed, and an official Python SDK.
+evidence of completion — with workflows, sprints, an AI Copilot,
+plugin marketplace, persistent vector index, time-travel queries,
+read-replica routing, an installable PWA, and a fully-localised UI.
+
 Built for ML research groups, AI/biotech labs, and prototype-heavy startup
 teams. Not another notes app.
 
-[Quickstart](#quickstart) · [Architecture](#architecture) · [Feature matrix](#feature-matrix) · [Documentation](docs/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/)
+[Quickstart](#quickstart) · [Architecture](#architecture) · [What's new in 0.9](#whats-new-in-09) · [Feature matrix](#feature-matrix) · [Documentation](docs/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/)
 
 </div>
+
+---
+
+## What's new in 0.9
+
+LabFlow 0.9 is the **AI + extensibility** release. The headline:
+
+| Area | What it does |
+|---|---|
+| 🤖 **AI Copilot** | Multi-step tool-using agent over team data. Ships with a deterministic offline planner *and* a clean LLM hook (`LABFLOW_COPILOT_LLM_CALLABLE`). Every turn is auditable. — [`/api/copilot`](docs/copilot.md) |
+| 🧩 **Plugin marketplace** | Catalogue + install/enable/disable lifecycle for signed manifests (SHA-256 verified, scope-permissioned). — [`/api/plugins`](docs/plugins.md) |
+| ⚡ **Vector index v2** | Pure-Python HNSW-style on-disk shards, snapshot rotation, brute-force fallback, optional cross-encoder re-rank. Zero new deps. — [`/api/vector`](docs/vector.md) |
+| 🌍 **Read-replica routing** | `read_session()` / `write_session()` context managers; round-robin across `LABFLOW_READ_REPLICA_URLS`. — [`/readyz/replicas`](docs/multi-region.md) |
+| ⏳ **Time-travel queries** | `?as_of=ISO` views of meetings/tasks reconstructed from `audit_events`. — [`/api/timetravel`](docs/timetravel.md) |
+| 📱 **Installable PWA** | Manifest + service worker + offline shell. Add-to-home-screen on iOS/Android/desktop. — [`/static/manifest.webmanifest`](docs/pwa.md) |
+| 🗣️ **i18n (en · es · fr)** | RFC 7231 `Accept-Language` negotiation, dict-based catalogue, ready for any new locale by single PR. — [`/api/i18n`](docs/i18n.md) |
+
+And v0.8 (just before it) added: **configurable workflows / state machines**,
+**sprints + burndown**, **task DAG + critical path**, **resource ACLs**,
+**signed share links**, **API-key scopes**, **CSV exports**, and a
+**Slack-compatible notifier**.
+
+200 tests, all green. Zero new runtime dependencies in either release.
 
 ---
 
@@ -63,37 +92,50 @@ on top:**
 
 ```mermaid
 flowchart LR
-    subgraph Client
-      U[Browser / CLI / API]
+    subgraph Clients
+      U[Browser / PWA]
+      CLI[labflow CLI]
+      SDK[Python SDK]
     end
     subgraph LabFlow API
-      MW1[RateLimit] --> MW2[Idempotency] --> R[Routes]
-      R --> EX[Extraction]
-      R --> SR[Hybrid search]
-      R --> GR[Decision graph]
-      R --> RBAC[RBAC]
+      MW1[RateLimit] --> MW2[Idempotency] --> AUTH[AuthN + RBAC + Scopes]
+      AUTH --> ACL[Resource ACLs]
+      ACL --> R[Routes]
+      R --> EX[Extraction + Workflows]
+      R --> SR[Hybrid search + Vector v2]
+      R --> GR[Decision graph + DAG]
+      R --> CO[AI Copilot]
+      R --> PL[Plugin marketplace]
+      R --> TT[Time-travel]
     end
     subgraph Persistence
-      DB[(Postgres / SQLite)]
-      EMB[(embeddings)]
+      P[(Primary DB)]
+      RR[(Read replicas)]
+      EMB[(embeddings + HNSW shards)]
       AUD[(audit_events)]
     end
     subgraph Async
-      JQ[Job queue] --> WK[Worker]
+      JQ[Job queue] --> WK[Worker leader-locked]
       WH[Webhook deliverer] --> SLK[Slack]
       WH --> GH[GitHub]
     end
     U --> MW1
-    R --> DB
+    CLI --> MW1
+    SDK --> MW1
+    R -- writes --> P
+    R -- reads --> RR
     EX --> EMB
+    SR --> EMB
     R --> JQ
     R --> WH
-    R -. SSE .-> U
+    R --> AUD
+    R -. SSE / WS .-> U
 ```
 
-Single-process by default (FastAPI + SQLAlchemy + Alembic + an
-in-process job worker). Scale horizontally by pointing at Postgres and
-running multiple replicas behind any HTTP load balancer.
+Single-process by default (FastAPI + SQLAlchemy + Alembic + an in-process
+job worker). Scale horizontally by pointing at Postgres, running multiple
+replicas behind any HTTP load balancer, and (optionally) configuring
+`LABFLOW_READ_REPLICA_URLS` for read-side fan-out.
 
 ## Quickstart
 
@@ -128,40 +170,37 @@ labflow digest --weekly
 
 ## Feature matrix
 
-| Capability | v0.1 | v0.2 | v0.3 | v0.4 | v0.5 | **v0.6** | **v0.7** |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Multi-tenancy + API keys | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Postgres + Alembic migrations | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Background job queue + worker | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Append-only audit log | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Outbound webhooks (HMAC-signed) | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Inbound GitHub evidence webhook | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Prometheus metrics | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Pluggable embeddings | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Hybrid keyword + semantic search | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Decision graph + Mermaid renderer | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Per-team rate limiting | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Idempotency-Key on writes | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Slack notifier | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Role-based access control | — | — | — | — | ✅ | ✅ | ✅ |
-| Encryption at rest (Fernet) | — | — | — | — | ✅ | ✅ | ✅ |
-| Server-Sent Events live stream | — | — | — | — | ✅ | ✅ | ✅ |
-| Plugin loader (entry-point + dotted) | — | — | — | — | ✅ | ✅ | ✅ |
-| GDPR export / erase + retention sweep | — | — | — | — | ✅ | ✅ | ✅ |
-| **Threaded comments + emoji reactions** | — | — | — | — | — | ✅ | ✅ |
-| **Saved searches** | — | — | — | — | — | ✅ | ✅ |
-| **Analytics endpoint (cycle time, trend)** | — | — | — | — | — | ✅ | ✅ |
-| **iCalendar (.ics) feed** | — | — | — | — | — | ✅ | ✅ |
-| **AI summary (TextRank + LLM hook)** | — | — | — | — | — | ✅ | ✅ |
-| **HTML email digest + notification prefs** | — | — | — | — | — | ✅ | ✅ |
-| **WebSocket bidirectional channel** | — | — | — | — | — | — | ✅ |
-| **Read-only GraphQL endpoint** | — | — | — | — | — | — | ✅ |
-| **OpenTelemetry traces + metrics** | — | — | — | — | — | — | ✅ |
-| **PostgreSQL full-text search backend** | — | — | — | — | — | — | ✅ |
-| **Distributed worker leader-lock** | — | — | — | — | — | — | ✅ |
-| **Official Python SDK (`labflow_client`)** | — | — | — | — | — | — | ✅ |
-| **Helm chart for Kubernetes** | — | — | — | — | — | — | ✅ |
+| Capability | v0.1–0.5 | v0.6 | v0.7 | **v0.8** | **v0.9** |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multi-tenancy + API keys + RBAC | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Postgres + Alembic migrations | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Background job queue + worker | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Append-only audit log | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Outbound webhooks (HMAC) + GitHub inbound | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Hybrid keyword + semantic search | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Decision graph + Mermaid render | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Encryption at rest + GDPR export/erase | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Plugin loader (entry-point + dotted) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Comments + reactions + analytics + .ics + summaries | — | ✅ | ✅ | ✅ | ✅ |
+| AI summary + email digest + notification prefs | — | ✅ | ✅ | ✅ | ✅ |
+| WebSocket + GraphQL + OpenTelemetry + Postgres FTS | — | — | ✅ | ✅ | ✅ |
+| Distributed worker leader-lock + Python SDK + Helm | — | — | ✅ | ✅ | ✅ |
+| **Workflows / state machines + SLA breach sweep** | — | — | — | ✅ | ✅ |
+| **Sprints / iterations + burndown** | — | — | — | ✅ | ✅ |
+| **Task DAG + critical-path analytics** | — | — | — | ✅ | ✅ |
+| **Resource ACLs (per-row allow-list)** | — | — | — | ✅ | ✅ |
+| **Signed share links (TTL + passcode)** | — | — | — | ✅ | ✅ |
+| **API-key scopes (OAuth-style)** | — | — | — | ✅ | ✅ |
+| **CSV exports (RFC 4180 + Excel BOM)** | — | — | — | ✅ | ✅ |
+| **Slack-compatible notifier** | — | — | — | ✅ | ✅ |
+| **AI Copilot (multi-step tool agent)** | — | — | — | — | ✅ |
+| **Plugin marketplace (signed manifests)** | — | — | — | — | ✅ |
+| **Vector index v2 (HNSW + re-rank + persist)** | — | — | — | — | ✅ |
+| **Read-replica routing** | — | — | — | — | ✅ |
+| **Time-travel queries (`?as_of=ISO`)** | — | — | — | — | ✅ |
+| **Installable PWA (manifest + SW + offline)** | — | — | — | — | ✅ |
+| **i18n (en · es · fr) with `Accept-Language`** | — | — | — | — | ✅ |
 
 ## Configuration
 

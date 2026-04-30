@@ -3,6 +3,102 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-04-30
+### Added — AI, Plugins, Vector v2, Multi-region, Time-travel, PWA & i18n
+- **AI Copilot** at `/api/copilot`. Multi-step *tool-using* agent over the
+  team's data with seven built-in tools (`search`, `get_task`,
+  `list_open_tasks`, `list_decisions`, `summarize_meeting`, `propose_task`,
+  `analytics`). Ships with a deterministic offline planner so the feature
+  works without an LLM; production deployments can plug in OpenAI / Claude
+  / a local model via `LABFLOW_COPILOT_LLM_CALLABLE`. Every turn — user
+  message, tool calls, assistant reply — is persisted in
+  `copilot_sessions.transcript_json` and the audit log, so any interaction
+  is replayable. `propose_task` is intentionally side-effect-free (drafts
+  only) to keep the agent safe.
+- **Plugin marketplace** at `/api/plugins`. Operator-facing install /
+  enable / disable / uninstall lifecycle for *signed manifests*: each
+  manifest is canonical-JSON-hashed (SHA-256) and the operator passes the
+  expected hash on install. Manifests declare `permissions` (subset of
+  v0.8 scopes) and `hooks` (typed event names). The catalogue is separate
+  from v0.5's runtime extension loader; ADR-0008 sketches the v1.0
+  sandbox plan.
+- **Vector index v2**: pure-Python HNSW-style on-disk shards persisted at
+  `LABFLOW_VECTOR_INDEX_DIR/<team_id>/`, with snapshot rotation via the
+  new `vector_index_shards` table. Brute-force fallback when no shard is
+  built (and for new teams in tests). Optional cross-encoder re-rank pass
+  with a built-in phrase-boost heuristic; `LABFLOW_RERANKER_CALLABLE`
+  hook for plugging in a real cross-encoder. ADR-0007.
+- **Read-replica routing** via `labflow.replica.read_session()` /
+  `write_session()` context managers. Round-robins reads across
+  `LABFLOW_READ_REPLICA_URLS` (comma-separated SQLAlchemy URLs); falls
+  back to the primary when no replicas are configured. New
+  `/readyz/replicas` endpoint reports per-replica health. ADR-0008.
+- **Time-travel queries** at `/api/timetravel/{tasks,meetings}/{id}?as_of=ISO`.
+  Reconstructs the historical state of a task or meeting by walking the
+  `audit_events` log in reverse. Validates the `as_of` window against
+  `LABFLOW_TIMETRAVEL_MAX_DAYS`; returns `incomplete: true` when an
+  audit action lacks rewind metadata.
+- **Installable PWA**: `manifest.webmanifest`, service worker
+  (`/static/sw.js`) with cache-first static + network-first JSON +
+  offline shell fallback (`/static/offline.html`). Installable via
+  add-to-home-screen on iOS, Android, and desktop Chromium.
+- **i18n (en · es · fr)**: dict-based message catalogues with RFC 7231
+  `Accept-Language` negotiation, served at `/api/i18n/messages`. Adding a
+  locale is a single PR to `labflow/i18n.py`.
+
+### Models / migration
+- New tables: `plugins`, `copilot_sessions`, `vector_index_shards`.
+- Migration: `e3b4c66de1b2_v0_9_plugins_copilot_vector.py`.
+
+### Tests
+- 200 total, all green (was 175 in 0.8).
+
+---
+
+## [0.8.0] — 2026-04-29
+### Added — Workflows, Permissions, Sprints, Sharing
+- **Configurable workflow / state-machine engine** for tasks. Per-team
+  workflows are JSON documents (`states`, `initial`, `terminal`,
+  `transitions`); a sensible default is auto-created. Endpoints
+  `POST /api/workflows`, `POST /api/tasks/{id}/transition`, and
+  `POST /api/admin/sla/sweep`. Transitions are audit-logged, fire SSE
+  events, and may set an SLA breach timestamp; the sweep endpoint emits
+  `task.sla.breach` events for late tasks.
+- **Sprints / iterations** at `/api/sprints` with a deterministic burndown
+  endpoint that reconstructs daily remaining-task counts from the audit
+  log. Sprints are slug-addressed and may be open or closed.
+- **Task DAG + critical path** at `/api/tasks/{id}/depends_on` and
+  `/api/tasks/critical-path`. Cycle-checked on insert (Kahn topo sort);
+  longest-weighted-path DP picks the critical chain using a confidence-
+  weighted effort heuristic.
+- **Resource-level ACLs** at `/api/acl`. Two-tier model on top of the
+  existing RBAC roles: when no ACL exists for a row the role check
+  alone applies (back-compat); when any ACL exists, only listed keys
+  may touch it. `acl.assert_allowed` is wired into task transitions.
+- **Signed share links** at `/api/share-links` and `/api/share/{token}`.
+  Tokens are stored hashed (SHA-256), optional passcode is constant-
+  time compared, TTL enforced, and links are explicitly revocable.
+- **API-key scopes**: `read / write / admin / webhook:emit /
+  plugin:install`. Legacy keys (NULL scopes) keep all permissions for
+  back-compat; new keys must declare scopes.
+- **CSV exports** at `/api/exports/{tasks,decisions}.csv`. RFC 4180
+  compliant (CRLF + minimal quoting) with a UTF-8 BOM so Excel auto-
+  detects the encoding correctly.
+- **Slack-compatible notifier** at `/api/notify/slack/digest` posting a
+  Slack `blocks` payload of the weekly digest. Stdlib `urllib`, optional
+  `X-LabFlow-Signature` HMAC, no extra dependency.
+
+### Models / migration
+- New tables: `workflows`, `sprints`, `resource_acls`, `share_links`.
+- New columns on `tasks`: `workflow_id`, `sprint_id`, `state`,
+  `sla_breach_at`. New column on `api_keys`: `scopes`.
+- Migration: `d2a3b55ce0a1_v0_8_workflows_sprints_acls.py`.
+
+### Tests
+- 175 total, all green (was 154 in 0.7).
+
+---
+
 ## [0.7.0] — 2026-04-26
 ### Added — Realtime, GraphQL & Observability
 - **WebSocket** at `/ws` with bidirectional protocol: `subscribe` /

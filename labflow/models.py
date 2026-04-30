@@ -680,3 +680,88 @@ class ShareLink(Base):
 # workflow_id / sprint_id / state / sla_breach_at, declared on Task above.
 
 
+# ---------------------------------------------------------------------------
+# v0.9 — plugins, AI copilot sessions
+# ---------------------------------------------------------------------------
+class Plugin(Base):
+    """A team-installed plugin from the LabFlow plugin marketplace.
+
+    Plugins are *signed manifests* — operators install a plugin by
+    submitting a manifest JSON and a SHA-256 hash. The system records
+    the manifest, hash, author, and version; *enabling* a plugin makes
+    it available to feature flags and the runtime registry.
+
+    The execution boundary (loading code, sandboxing) is intentionally
+    out of scope for v0.9 — this gives the team a discoverable catalogue
+    without the security headache of arbitrary code execution. See
+    ADR-0010 for the sandbox plan in v1.0.
+    """
+
+    __tablename__ = "plugins"
+    __table_args__ = (
+        UniqueConstraint("team_id", "name", name="uq_plugin_team_name"),
+        Index("ix_plugin_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(32))
+    author: Mapped[str] = mapped_column(String(128))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    manifest_json: Mapped[str] = mapped_column(Text)
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    installed_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class CopilotSession(Base):
+    """Persistent multi-turn AI copilot session with full audit trail.
+
+    Each turn (user message + tool calls + assistant message) is appended
+    to ``transcript_json`` (a JSON array) so operators can replay any
+    interaction. Sessions are scoped to a team and (optionally) an actor
+    API key.
+    """
+
+    __tablename__ = "copilot_sessions"
+    __table_args__ = (Index("ix_copilot_team_created", "team_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    actor_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(255))
+    transcript_json: Mapped[str] = mapped_column(Text, default="[]")
+    closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class VectorIndexShard(Base):
+    """Persistence row for a vector-index v2 shard (HNSW snapshot).
+
+    The actual vectors live on disk under
+    ``LABFLOW_VECTOR_INDEX_DIR/<team_id>/<shard_id>.idx``. This row is
+    metadata: which model produced the snapshot, dimensionality, vector
+    count, and the build timestamp. The runtime loader picks the most
+    recent shard per ``(team_id, model)`` and falls back to brute-force
+    when no shard exists.
+    """
+
+    __tablename__ = "vector_index_shards"
+    __table_args__ = (
+        Index("ix_vshard_team_model_built", "team_id", "model", "built_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    model: Mapped[str] = mapped_column(String(64))
+    dim: Mapped[int] = mapped_column(Integer)
+    vectors: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(String(512))
+    sha256: Mapped[str] = mapped_column(String(64))
+    built_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+

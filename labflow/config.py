@@ -92,6 +92,22 @@ class Settings(BaseSettings):
     # --- observability (v0.7) -----------------------------------------
     otel_enabled: bool = False
 
+    # --- v0.9 ----------------------------------------------------------
+    # Copilot LLM hook ("module:fn"). When unset, the deterministic
+    # rule-based planner is used (always available, no network).
+    copilot_llm_callable: str = ""
+    # Vector index v2 — when set, persistent HNSW-style snapshots live
+    # under this directory. Empty => brute-force only (current behaviour).
+    vector_index_dir: str = ""
+    # Read-replica routing (v0.9). Comma-separated SQLAlchemy URLs; the
+    # router picks one round-robin for read-only sessions. Falls back to
+    # the primary ``database_url`` when empty.
+    read_replica_urls: list[str] = Field(default_factory=list)
+    # Time-travel: maximum lookback window for ?as_of= queries (days).
+    timetravel_max_days: int = 365 * 2
+    # i18n: comma-separated UI locales served (first is the default).
+    locales: list[str] = Field(default_factory=lambda: ["en", "es", "fr"])
+
     # --- webhooks (v0.3) -----------------------------------------------
     webhook_signing_secret: str = ""
     github_webhook_secret: str = ""
@@ -99,6 +115,13 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors(cls, v):
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
+
+    @field_validator("read_replica_urls", "locales", mode="before")
+    @classmethod
+    def _split_csv(cls, v):
         if isinstance(v, str):
             return [s.strip() for s in v.split(",") if s.strip()]
         return v

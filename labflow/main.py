@@ -24,16 +24,20 @@ from . import (
     acl as acl_mod,
     calendar_feed,
     collab as collab_mod,
+    copilot as copilot_mod,
     csv_export,
     dag,
     exports,
     graph as graph_mod,
     graphql_api,
+    i18n,
     jobs as jobs_mod,
     metrics,
     models,
     notif_prefs,
     otel,
+    plugin_marketplace,
+    replica as replica_mod,
     retention as retention_mod,
     saved_searches,
     scopes as scopes_mod,
@@ -43,6 +47,8 @@ from . import (
     sprints as sprints_mod,
     sse as sse_mod,
     summary as summary_mod,
+    timetravel,
+    vector_index_v2,
     verification,
     webhooks as webhooks_mod,
     workflows as workflows_mod,
@@ -152,6 +158,24 @@ class _ShareLinkIn(_BM):
 class _DependencyIn(_BM):
     depends_on_id: int
 
+
+# v0.9 input bodies
+class _CopilotStartIn(_BM):
+    title: str = "New session"
+
+
+class _CopilotTurnIn(_BM):
+    message: str
+
+
+class _PluginInstallIn(_BM):
+    manifest: dict
+    expected_sha256: str | None = None
+
+
+class _PluginEnableIn(_BM):
+    enabled: bool
+
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
@@ -192,13 +216,13 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.8.0",
+        version="0.9.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
-            "experiments, and evidence. v0.8 adds configurable workflows, "
-            "sprints, critical-path analytics, resource ACLs, share links, "
-            "API-key scopes, Slack notifications, and CSV exports."
+            "experiments, and evidence. v0.9 adds an AI Copilot, plugin "
+            "marketplace, persistent vector index, read-replica routing, "
+            "time-travel queries, PWA install, and i18n (en/es/fr)."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -219,6 +243,11 @@ def create_app() -> FastAPI:
             {"name": "dag", "description": "Task dependency graph + critical path (v0.8)."},
             {"name": "acl", "description": "Resource-level ACLs and share links (v0.8)."},
             {"name": "exports", "description": "CSV / JSON exports for tasks and decisions (v0.8)."},
+            {"name": "copilot", "description": "Multi-step AI agent over team data (v0.9)."},
+            {"name": "plugins", "description": "Plugin marketplace install/enable lifecycle (v0.9)."},
+            {"name": "vector", "description": "Persistent HNSW-style vector index (v0.9)."},
+            {"name": "timetravel", "description": "?as_of= queries for historical state (v0.9)."},
+            {"name": "i18n", "description": "Localised UI catalogues (v0.9)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -1447,6 +1476,187 @@ def create_app() -> FastAPI:
         ok = slack_mod.post_message(webhook_url, msg,
                                     signing_secret=settings.webhook_signing_secret or None)
         return {"posted": ok}
+
+    # ====================================================================
+    # v0.9 — AI Copilot, Plugin Marketplace, Vector v2, Time-travel, i18n, PWA
+    # ====================================================================
+
+    # ------------------------------------------------------------ Copilot
+    @app.post("/api/copilot/sessions", status_code=201, tags=["copilot"])
+    def copilot_start_route(
+        payload: _CopilotStartIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        s = copilot_mod.start_session(
+            db, team_id=team.id, title=payload.title,
+            actor_key_id=getattr(request.state, "api_key_id", None),
+            actor=_actor_label(request),
+        )
+        return {"id": s.id, "title": s.title, "closed": s.closed,
+                "created_at": s.created_at.isoformat()}
+
+    @app.get("/api/copilot/sessions", tags=["copilot"])
+    def copilot_list_route(
+        limit: int = 20,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"sessions": copilot_mod.list_sessions(db, team_id=team.id, limit=limit)}
+
+    @app.get("/api/copilot/sessions/{session_id}", tags=["copilot"])
+    def copilot_get_route(
+        session_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return copilot_mod.get_session(db, team_id=team.id, session_id=session_id)
+
+    @app.post("/api/copilot/sessions/{session_id}/turns", tags=["copilot"])
+    def copilot_turn_route(
+        session_id: int, payload: _CopilotTurnIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return copilot_mod.take_turn(
+            db, team_id=team.id, session_id=session_id,
+            message=payload.message, actor=_actor_label(request),
+        )
+
+    @app.post("/api/copilot/sessions/{session_id}/close", tags=["copilot"])
+    def copilot_close_route(
+        session_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        copilot_mod.close_session(db, team_id=team.id, session_id=session_id,
+                                  actor=_actor_label(request))
+        return {"ok": True}
+
+    @app.get("/api/copilot/tools", tags=["copilot"])
+    def copilot_tools_route() -> dict:
+        return {"tools": copilot_mod.TOOL_SCHEMA}
+
+    # ------------------------------------------------------------ Plugins
+    @app.get("/api/plugins", tags=["plugins"])
+    def plugins_list_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        ps = plugin_marketplace.list_plugins(db, team_id=team.id)
+        import json as _json
+        return {"plugins": [
+            {"id": p.id, "name": p.name, "version": p.version,
+             "author": p.author, "description": p.description,
+             "enabled": p.enabled, "manifest_sha256": p.manifest_sha256,
+             "manifest": _json.loads(p.manifest_json),
+             "installed_at": p.installed_at.isoformat()}
+            for p in ps
+        ]}
+
+    @app.post("/api/plugins", status_code=201, tags=["plugins"],
+              dependencies=[Depends(require_role("admin"))])
+    def plugins_install_route(
+        payload: _PluginInstallIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        p = plugin_marketplace.install(
+            db, team_id=team.id, manifest=payload.manifest,
+            expected_sha256=payload.expected_sha256,
+            actor=_actor_label(request),
+        )
+        return {"id": p.id, "name": p.name, "version": p.version,
+                "manifest_sha256": p.manifest_sha256, "enabled": p.enabled}
+
+    @app.post("/api/plugins/{name}/enable", tags=["plugins"],
+              dependencies=[Depends(require_role("admin"))])
+    def plugins_enable_route(
+        name: str, payload: _PluginEnableIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        p = plugin_marketplace.set_enabled(
+            db, team_id=team.id, name=name, enabled=payload.enabled,
+            actor=_actor_label(request),
+        )
+        return {"name": p.name, "enabled": p.enabled}
+
+    @app.delete("/api/plugins/{name}", tags=["plugins"],
+                dependencies=[Depends(require_role("admin"))])
+    def plugins_uninstall_route(
+        name: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        plugin_marketplace.uninstall(db, team_id=team.id, name=name,
+                                     actor=_actor_label(request))
+        return {"ok": True}
+
+    # ------------------------------------------------------------ Vector index v2
+    @app.post("/api/vector/build", tags=["vector"],
+              dependencies=[Depends(require_role("admin"))])
+    def vector_build_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        meta = vector_index_v2.build_team_index(db, team_id=team.id)
+        if meta is None:
+            return {"built": False, "reason":
+                    "no vectors or LABFLOW_VECTOR_INDEX_DIR unset"}
+        return {"built": True, "shard_id": meta.id, "vectors": meta.vectors,
+                "model": meta.model, "path": meta.path,
+                "sha256": meta.sha256}
+
+    @app.get("/api/vector/query", tags=["vector"])
+    def vector_query_route(
+        q: str, k: int = 10, rerank: bool = False,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        results = vector_index_v2.query(
+            db, team_id=team.id, text=q, k=max(1, min(k, 50)),
+            rerank_query=q if rerank else None,
+        )
+        return {"results": [
+            {"score": round(s, 4),
+             "entity_type": e.entity_type, "entity_id": e.entity_id}
+            for s, e in results
+        ]}
+
+    # ------------------------------------------------------------ Time-travel
+    @app.get("/api/timetravel/tasks/{task_id}", tags=["timetravel"])
+    def timetravel_task_route(
+        task_id: int, as_of: datetime,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return timetravel.task_as_of(db, team_id=team.id, task_id=task_id,
+                                     as_of=as_of)
+
+    @app.get("/api/timetravel/meetings/{meeting_id}", tags=["timetravel"])
+    def timetravel_meeting_route(
+        meeting_id: int, as_of: datetime,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return timetravel.meeting_as_of(db, team_id=team.id,
+                                        meeting_id=meeting_id, as_of=as_of)
+
+    # ------------------------------------------------------------ i18n
+    @app.get("/api/i18n/locales", tags=["i18n"])
+    def i18n_locales_route() -> dict:
+        return {"locales": i18n.supported_locales()}
+
+    @app.get("/api/i18n/messages", tags=["i18n"])
+    def i18n_messages_route(request: Request, locale: str | None = None) -> dict:
+        loc = locale or i18n.negotiate(request.headers.get("accept-language"))
+        return {"locale": loc, "messages": i18n.all_messages(loc)}
+
+    # ------------------------------------------------------------ Replica health
+    @app.get("/readyz/replicas", tags=["system"])
+    def replica_health_route() -> dict:
+        return replica_mod.health()
 
     return app
 

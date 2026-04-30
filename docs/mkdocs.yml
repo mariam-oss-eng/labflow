@@ -89,6 +89,10 @@ nav:
           - "0004 · Collaboration model": adr/0004-collaboration-model.md
           - "0005 · WebSocket vs SSE": adr/0005-websocket-vs-sse.md
           - "0006 · Hand-rolled GraphQL": adr/0006-hand-rolled-graphql.md
+          - "0007 · Vector index v2": adr/0007-vector-index-v2.md
+          - "0008 · Read-replica routing": adr/0008-replica-routing.md
+          - "0009 · Copilot tool agent": adr/0009-copilot-tool-agent.md
+          - "0010 · Plugin marketplace": adr/0010-plugin-marketplace.md
   - Reference:
       - REST API: api.md
       - GraphQL: graphql.md
@@ -98,4 +102,14 @@ nav:
       - Python SDK: sdk.md
       - Observability: observability.md
       - Deployment (Docker + Helm): deployment.md
+  - "v0.8 — Workflows":
+      - Workflows & sprints: workflows.md
+  - "v0.9 — AI & extensibility":
+      - AI Copilot: copilot.md
+      - Plugin marketplace: plugins.md
+      - Vector index v2: vector.md
+      - Time-travel: timetravel.md
+      - Multi-region: multi-region.md
+      - PWA: pwa.md
+      - i18n: i18n.md
   - Changelog: changelog.md
