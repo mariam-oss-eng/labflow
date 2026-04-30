@@ -74,6 +74,9 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # v0.8 — scope tokens, comma-separated. NULL means "all scopes" (back-compat).
+    # Recognised scopes: read, write, admin, webhook:emit, plugin:install
+    scopes: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     team: Mapped["Team"] = relationship()
 
@@ -171,6 +174,15 @@ class Task(Base):
     source_span: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # v0.8 — workflow / sprint / state-machine
+    workflow_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True
+    )
+    sprint_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sprints.id", ondelete="SET NULL"), nullable=True
+    )
+    state: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    sla_breach_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="tasks")
     owner: Mapped[Optional["Owner"]] = relationship(back_populates="tasks")
@@ -544,5 +556,127 @@ class WorkerLock(Base):
     owner: Mapped[str] = mapped_column(String(128))
     acquired_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# ---------------------------------------------------------------------------
+# v0.8 — workflows, sprints, ACLs, scopes, share links
+# ---------------------------------------------------------------------------
+class Workflow(Base):
+    """A configurable task state-machine for a team.
+
+    ``definition_json`` is a JSON document of the form::
+
+        {
+          "states": ["open", "in_progress", "in_review", "closed"],
+          "initial": "open",
+          "terminal": ["closed"],
+          "transitions": [
+            {"from": "open", "to": "in_progress",
+             "guard_role": "member"},
+            {"from": "in_progress", "to": "in_review",
+             "sla_hours": 48},
+            ...
+          ]
+        }
+
+    Exactly one workflow per team is marked ``is_default``; new tasks adopt
+    the default workflow's ``initial`` state.
+    """
+
+    __tablename__ = "workflows"
+    __table_args__ = (
+        UniqueConstraint("team_id", "name", name="uq_workflow_team_name"),
+        Index("ix_workflow_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(64))
+    definition_json: Mapped[str] = mapped_column(Text)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class Sprint(Base):
+    """A time-boxed iteration. Tasks are assigned via ``Task.sprint_id``."""
+
+    __tablename__ = "sprints"
+    __table_args__ = (
+        UniqueConstraint("team_id", "slug", name="uq_sprint_team_slug"),
+        Index("ix_sprint_team_active", "team_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    slug: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
+    starts_at: Mapped[datetime] = mapped_column(DateTime)
+    ends_at: Mapped[datetime] = mapped_column(DateTime)
+    goal: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ResourceAcl(Base):
+    """Per-resource access control (in addition to RBAC role).
+
+    A row grants a single API key (``api_key_id``) a permission level
+    (``read`` / ``write``) on a single resource. The absence of any ACL row
+    for a resource means "fall back to the role-based check" — ACLs only
+    *restrict* access, they don't widen it. A row with ``api_key_id NULL``
+    is a wildcard "everyone in the team" grant used to mark public-within-
+    team resources without listing every key.
+    """
+
+    __tablename__ = "resource_acls"
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id", "entity_type", "entity_id", "api_key_id",
+            name="uq_acl_unique",
+        ),
+        Index("ix_acl_entity", "team_id", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))     # meeting | decision | task
+    entity_id: Mapped[int] = mapped_column(Integer)
+    api_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="CASCADE"), nullable=True
+    )
+    permission: Mapped[str] = mapped_column(String(8), default="read")  # read | write
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ShareLink(Base):
+    """A signed, optionally passcode-gated link granting time-limited read.
+
+    Tokens are stored *hashed* (SHA-256) — the plaintext token is shown to
+    the operator exactly once at creation and embedded in the link.
+    """
+
+    __tablename__ = "share_links"
+    __table_args__ = (
+        Index("ix_share_token_hash", "token_hash", unique=True),
+        Index("ix_share_team_entity", "team_id", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[int] = mapped_column(Integer)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    passcode_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+# Note: ApiKey gains a ``scopes`` column (CSV of scope strings) via the v0.8
+# migration; the column is declared on the ApiKey class above. Task gains
+# workflow_id / sprint_id / state / sla_breach_at, declared on Task above.
 
 

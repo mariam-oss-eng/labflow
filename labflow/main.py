@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +21,11 @@ from . import digest as digest_mod
 from . import __version__
 from . import (
     analytics as analytics_mod,
+    acl as acl_mod,
     calendar_feed,
     collab as collab_mod,
+    csv_export,
+    dag,
     exports,
     graph as graph_mod,
     graphql_api,
@@ -32,12 +36,16 @@ from . import (
     otel,
     retention as retention_mod,
     saved_searches,
+    scopes as scopes_mod,
     search as search_mod,
     services,
+    slack as slack_mod,
+    sprints as sprints_mod,
     sse as sse_mod,
     summary as summary_mod,
     verification,
     webhooks as webhooks_mod,
+    workflows as workflows_mod,
     ws as ws_mod,
 )
 from .auth import build_team_dependency, ensure_bootstrap_team, require_role
@@ -103,6 +111,47 @@ class _NotifPrefIn(_BM):
 class _GraphQLIn(_BM):
     query: str
 
+
+# v0.8 input bodies
+class _WorkflowIn(_BM):
+    name: str
+    definition: dict
+    make_default: bool = False
+
+
+class _TaskTransitionIn(_BM):
+    to_state: str
+
+
+class _SprintIn(_BM):
+    name: str
+    starts_at: datetime  # type: ignore[name-defined]
+    ends_at: datetime    # type: ignore[name-defined]
+    goal: str | None = None
+    slug: str | None = None
+
+
+class _SprintAssignIn(_BM):
+    task_id: int
+
+
+class _AclGrantIn(_BM):
+    entity_type: str
+    entity_id: int
+    api_key_id: int | None = None
+    permission: str = "read"
+
+
+class _ShareLinkIn(_BM):
+    entity_type: str
+    entity_id: int
+    ttl_hours: int = 24 * 7
+    passcode: str | None = None
+
+
+class _DependencyIn(_BM):
+    depends_on_id: int
+
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
@@ -143,12 +192,13 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.7.0",
+        version="0.8.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
-            "experiments, and evidence. v0.7 adds GraphQL, WebSockets, "
-            "OpenTelemetry, Postgres FTS, and an official Python SDK."
+            "experiments, and evidence. v0.8 adds configurable workflows, "
+            "sprints, critical-path analytics, resource ACLs, share links, "
+            "API-key scopes, Slack notifications, and CSV exports."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -164,6 +214,11 @@ def create_app() -> FastAPI:
             {"name": "calendar", "description": "iCalendar feed of upcoming task due dates (v0.6)."},
             {"name": "saved-searches", "description": "Named, persisted search queries (v0.6)."},
             {"name": "graphql", "description": "Read-only GraphQL endpoint (v0.7)."},
+            {"name": "workflows", "description": "Configurable task state machines (v0.8)."},
+            {"name": "sprints", "description": "Time-boxed iterations with burndown (v0.8)."},
+            {"name": "dag", "description": "Task dependency graph + critical path (v0.8)."},
+            {"name": "acl", "description": "Resource-level ACLs and share links (v0.8)."},
+            {"name": "exports", "description": "CSV / JSON exports for tasks and decisions (v0.8)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -826,7 +881,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------ health
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
-        return {"ok": True, "version": "0.7.0"}
+        return {"ok": True, "version": __version__}
 
     @app.get("/readyz", include_in_schema=False)
     def readyz(db: Session = Depends(get_db)) -> dict:
@@ -1101,6 +1156,297 @@ def create_app() -> FastAPI:
     @app.get("/graphql/schema", response_class=JSONResponse, tags=["graphql"])
     def graphql_schema() -> dict:
         return graphql_api.SCHEMA
+
+    # ====================================================================
+    # v0.8 — Workflows / Sprints / DAG / ACL / Share links / CSV / Slack
+    # ====================================================================
+
+    # ------------------------------------------------------------ workflows
+    @app.get("/api/workflows", tags=["workflows"])
+    def list_workflows_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        wfs = workflows_mod.list_workflows(db, team_id=team.id)
+        # Ensure default exists (even if the team has no tasks yet) so the UI
+        # has something to render.
+        if not wfs:
+            workflows_mod.get_default_workflow(db, team_id=team.id)
+            wfs = workflows_mod.list_workflows(db, team_id=team.id)
+        import json as _json
+        return {"workflows": [
+            {"id": w.id, "name": w.name, "is_default": w.is_default,
+             "definition": _json.loads(w.definition_json)}
+            for w in wfs
+        ]}
+
+    @app.post("/api/workflows", status_code=201, tags=["workflows"],
+              dependencies=[Depends(require_role("admin"))])
+    def create_workflow_route(
+        payload: _WorkflowIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        wf = workflows_mod.create_workflow(
+            db, team_id=team.id, name=payload.name,
+            definition=payload.definition,
+            make_default=payload.make_default,
+            actor=_actor_label(request),
+        )
+        import json as _json
+        return {
+            "id": wf.id, "name": wf.name, "is_default": wf.is_default,
+            "definition": _json.loads(wf.definition_json),
+        }
+
+    @app.post("/api/tasks/{task_id}/transition", tags=["workflows"])
+    def transition_task_route(
+        task_id: int,
+        payload: _TaskTransitionIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        task = db.get(models.Task, task_id)
+        if task is None or task.team_id != team.id:
+            raise NotFoundError("task not found")
+        # ACL gate (only enforced when ACL rows exist for this task).
+        acl_mod.assert_allowed(
+            db, team_id=team.id, entity_type="task", entity_id=task.id,
+            api_key_id=getattr(request.state, "api_key_id", None),
+            permission="write",
+        )
+        result = workflows_mod.transition_task(
+            db, task=task, to_state=payload.to_state,
+            actor=_actor_label(request),
+            actor_role=getattr(request.state, "role", "admin"),
+        )
+        return {
+            "task_id": task.id,
+            "from_state": result.from_state,
+            "to_state": result.to_state,
+            "is_terminal": result.is_terminal,
+            "sla_breach_at": result.sla_breach_at.isoformat()
+            if result.sla_breach_at else None,
+        }
+
+    @app.post("/api/admin/sla/sweep", tags=["admin"],
+              dependencies=[Depends(require_role("admin"))])
+    def sla_sweep_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        breached = workflows_mod.sweep_sla_breaches(db, team_id=team.id)
+        return {"breached": breached, "count": len(breached)}
+
+    # ------------------------------------------------------------ sprints
+    @app.get("/api/sprints", tags=["sprints"])
+    def list_sprints_route(
+        active: bool | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        sprints = sprints_mod.list_sprints(db, team_id=team.id, active=active)
+        return {"sprints": [
+            {"id": s.id, "slug": s.slug, "name": s.name,
+             "starts_at": s.starts_at.isoformat(),
+             "ends_at": s.ends_at.isoformat(),
+             "active": s.active, "goal": s.goal}
+            for s in sprints
+        ]}
+
+    @app.post("/api/sprints", status_code=201, tags=["sprints"])
+    def create_sprint_route(
+        payload: _SprintIn,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        sp = sprints_mod.create_sprint(
+            db, team_id=team.id, name=payload.name,
+            starts_at=payload.starts_at, ends_at=payload.ends_at,
+            goal=payload.goal, slug=payload.slug,
+            actor=_actor_label(request),
+        )
+        return {"id": sp.id, "slug": sp.slug, "name": sp.name,
+                "starts_at": sp.starts_at.isoformat(),
+                "ends_at": sp.ends_at.isoformat(),
+                "active": sp.active, "goal": sp.goal}
+
+    @app.post("/api/sprints/{slug}/close", tags=["sprints"],
+              dependencies=[Depends(require_role("member"))])
+    def close_sprint_route(
+        slug: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        sp = sprints_mod.close_sprint(db, team_id=team.id, slug=slug,
+                                      actor=_actor_label(request))
+        return {"slug": sp.slug, "active": sp.active}
+
+    @app.post("/api/sprints/{slug}/assign", tags=["sprints"])
+    def assign_sprint_route(
+        slug: str, payload: _SprintAssignIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        task = sprints_mod.assign_task(db, team_id=team.id,
+                                       sprint_slug=slug, task_id=payload.task_id,
+                                       actor=_actor_label(request))
+        return {"task_id": task.id, "sprint_slug": slug}
+
+    @app.get("/api/sprints/{slug}/burndown", tags=["sprints"])
+    def burndown_route(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return sprints_mod.burndown(db, team_id=team.id, slug=slug)
+
+    # ------------------------------------------------------------ DAG / critical path
+    @app.post("/api/tasks/{task_id}/depends_on", status_code=201, tags=["dag"])
+    def add_dependency_route(
+        task_id: int, payload: _DependencyIn,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        dag.add_dependency(db, team_id=team.id, task_id=task_id,
+                           depends_on_id=payload.depends_on_id)
+        return {"task_id": task_id, "depends_on_id": payload.depends_on_id}
+
+    @app.get("/api/tasks/critical-path", tags=["dag"])
+    def critical_path_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return dag.critical_path(db, team_id=team.id)
+
+    # ------------------------------------------------------------ ACL
+    @app.get("/api/acl", tags=["acl"])
+    def list_acls_route(
+        entity_type: str | None = None, entity_id: int | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = acl_mod.list_acls(db, team_id=team.id,
+                                 entity_type=entity_type, entity_id=entity_id)
+        return {"acls": [
+            {"id": r.id, "entity_type": r.entity_type, "entity_id": r.entity_id,
+             "api_key_id": r.api_key_id, "permission": r.permission}
+            for r in rows
+        ]}
+
+    @app.post("/api/acl", status_code=201, tags=["acl"],
+              dependencies=[Depends(require_role("admin"))])
+    def grant_acl_route(
+        payload: _AclGrantIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        row = acl_mod.grant(db, team_id=team.id,
+                            entity_type=payload.entity_type,
+                            entity_id=payload.entity_id,
+                            api_key_id=payload.api_key_id,
+                            permission=payload.permission,
+                            actor=_actor_label(request))
+        return {"id": row.id, "permission": row.permission}
+
+    @app.delete("/api/acl/{acl_id}", tags=["acl"],
+                dependencies=[Depends(require_role("admin"))])
+    def revoke_acl_route(
+        acl_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        acl_mod.revoke(db, team_id=team.id, acl_id=acl_id,
+                       actor=_actor_label(request))
+        return {"ok": True}
+
+    @app.post("/api/share-links", status_code=201, tags=["acl"],
+              dependencies=[Depends(require_role("member"))])
+    def create_share_link_route(
+        payload: _ShareLinkIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        row, plaintext = acl_mod.create_share_link(
+            db, team_id=team.id, entity_type=payload.entity_type,
+            entity_id=payload.entity_id, ttl_hours=payload.ttl_hours,
+            passcode=payload.passcode,
+            created_by_key_id=getattr(request.state, "api_key_id", None),
+            actor=_actor_label(request),
+        )
+        return {
+            "id": row.id, "token": plaintext,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "entity_type": row.entity_type, "entity_id": row.entity_id,
+        }
+
+    @app.get("/api/share/{token}", tags=["acl"])
+    def resolve_share_route(
+        token: str, passcode: str | None = None,
+        db: Session = Depends(get_db),
+    ) -> dict:
+        row = acl_mod.resolve(db, token=token, passcode=passcode)
+        # Return a minimal read-only payload for the entity.
+        if row.entity_type == "meeting":
+            m = db.get(models.Meeting, row.entity_id)
+            if m is None:
+                raise NotFoundError("entity gone")
+            return {
+                "type": "meeting", "id": m.id, "title": m.title,
+                "occurred_at": m.occurred_at.isoformat(),
+                "decisions": [
+                    {"id": d.id, "statement": d.statement} for d in m.decisions
+                ],
+                "tasks": [
+                    {"id": t.id, "title": t.title, "status": t.status}
+                    for t in m.tasks
+                ],
+            }
+        if row.entity_type == "decision":
+            d = db.get(models.Decision, row.entity_id)
+            return {"type": "decision", "id": d.id, "statement": d.statement,
+                    "rationale": d.rationale, "confidence": d.confidence}
+        if row.entity_type == "task":
+            t = db.get(models.Task, row.entity_id)
+            return {"type": "task", "id": t.id, "title": t.title,
+                    "status": t.status, "state": t.state}
+        raise NotFoundError("unsupported entity")
+
+    # ------------------------------------------------------------ CSV exports
+    @app.get("/api/exports/tasks.csv", response_class=PlainTextResponse,
+             tags=["exports"])
+    def tasks_csv_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> PlainTextResponse:
+        body = csv_export.tasks_csv(db, team_id=team.id)
+        return PlainTextResponse(content=body, media_type="text/csv; charset=utf-8")
+
+    @app.get("/api/exports/decisions.csv", response_class=PlainTextResponse,
+             tags=["exports"])
+    def decisions_csv_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> PlainTextResponse:
+        body = csv_export.decisions_csv(db, team_id=team.id)
+        return PlainTextResponse(content=body, media_type="text/csv; charset=utf-8")
+
+    # ------------------------------------------------------------ Slack
+    @app.post("/api/notify/slack/digest", tags=["system"],
+              dependencies=[Depends(require_role("admin"))])
+    def slack_digest_route(
+        webhook_url: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        weekly = digest_mod.render_weekly(db, team_id=team.id)
+        msg = slack_mod.render_digest(weekly)
+        ok = slack_mod.post_message(webhook_url, msg,
+                                    signing_secret=settings.webhook_signing_secret or None)
+        return {"posted": ok}
 
     return app
 
