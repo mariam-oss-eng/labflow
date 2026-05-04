@@ -101,9 +101,13 @@ class _Parser:
         return v
 
     def parse(self) -> list[Field]:
-        # Allow optional "query" / "query Name" prefix.
+        # Allow optional "query"/"mutation" / "<op> Name" prefix.
+        # The operation kind is recorded so the caller can dispatch
+        # mutations against a separate resolver table.
+        self.operation = "query"
         peek = self.peek()
-        if peek and peek[0] == "WORD" and peek[1] == "query":
+        if peek and peek[0] == "WORD" and peek[1] in ("query", "mutation"):
+            self.operation = peek[1]
             self.i += 1
             peek = self.peek()
             if peek and peek[0] == "WORD":
@@ -140,7 +144,18 @@ class _Parser:
 
 
 def parse(src: str) -> list[Field]:
+    """Back-compat: returns the list of top-level fields only.
+
+    Use :func:`parse_with_op` if you need the operation kind too.
+    """
     return _Parser(_tokenize(src)).parse()
+
+
+def parse_with_op(src: str) -> tuple[str, list[Field]]:
+    """Return ``(operation, fields)`` where operation is 'query' or 'mutation'."""
+    p = _Parser(_tokenize(src))
+    fields = p.parse()
+    return p.operation, fields
 
 
 # ----------------------------------------------------------- execution / schema
@@ -228,19 +243,33 @@ def _meeting_dict(m: models.Meeting) -> dict:
     }
 
 
-def execute(sess: Session, *, team_id: int, query: str) -> dict:
-    """Run a GraphQL query and return ``{"data": ..., "errors": [...]}``."""
+def execute(sess: Session, *, team_id: int, query: str,
+            actor: str = "system") -> dict:
+    """Run a GraphQL query/mutation and return ``{"data": ..., "errors": [...]}``.
+
+    Mutations available since v0.11:
+      * ``commentCreate(entity_type, entity_id, body)`` → Comment
+      * ``taskTransition(id, to_state)`` → Task
+      * ``wikiPageUpsert(slug, title, body)`` → WikiPage
+    """
     if not isinstance(query, str):
         return {"data": None, "errors": [{"message": "query must be a string"}]}
     if len(query) > MAX_QUERY_BYTES:
         return {"data": None,
                 "errors": [{"message": f"query exceeds {MAX_QUERY_BYTES} bytes"}]}
     try:
-        fields = parse(query)
+        op, fields = parse_with_op(query)
     except Exception as exc:
         # Don't echo full exception detail (it can leak file paths / internals).
         return {"data": None, "errors": [{"message": f"parse error: {type(exc).__name__}"}]}
 
+    if op == "mutation":
+        return _execute_mutations(sess, team_id=team_id, fields=fields,
+                                  actor=actor)
+    return _execute_queries(sess, team_id=team_id, fields=fields)
+
+
+def _execute_queries(sess: Session, *, team_id: int, fields: list[Field]) -> dict:
     data: dict[str, Any] = {}
     errors: list[dict] = []
     for f in fields:
@@ -306,4 +335,71 @@ def execute(sess: Session, *, team_id: int, query: str) -> dict:
             # exception type to the client to avoid stack-trace exposure.
             log.warning("graphql resolver error in %r", f.name, exc_info=True)
             errors.append({"message": f"{f.name}: {type(exc).__name__}"})
+    return {"data": data, "errors": errors}
+
+
+def _execute_mutations(
+    sess: Session, *, team_id: int, fields: list[Field], actor: str,
+) -> dict:
+    """Execute the supported v0.11 mutations.
+
+    Each mutation is wrapped in its own try/except so a single failure
+    doesn't poison the whole request — the response carries partial
+    ``data`` plus per-field ``errors``, matching the REST endpoints'
+    behaviour.
+    """
+    from . import wiki as wiki_mod, workflows as workflows_mod
+    data: dict[str, Any] = {}
+    errors: list[dict] = []
+    for f in fields:
+        try:
+            if f.name == "commentCreate":
+                et = str(f.args.get("entity_type", ""))
+                eid = int(f.args.get("entity_id", 0))
+                body = str(f.args.get("body", ""))
+                if not et or not eid or not body:
+                    raise ValueError(
+                        "commentCreate requires entity_type, entity_id, body"
+                    )
+                c = collab_mod.add_comment(
+                    sess, team_id=team_id, entity_type=et, entity_id=eid,
+                    body=body, actor=actor,
+                )
+                data["commentCreate"] = _project({
+                    "id": c.id, "actor": c.actor, "body": c.body,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                }, f.selections)
+            elif f.name == "taskTransition":
+                tid = int(f.args.get("id", 0))
+                to_state = str(f.args.get("to_state", ""))
+                if not tid or not to_state:
+                    raise ValueError("taskTransition requires id and to_state")
+                t = sess.get(models.Task, tid)
+                if t is None or t.team_id != team_id:
+                    raise ValueError(f"task {tid} not found")
+                workflows_mod.transition_task(
+                    sess, task=t, to_state=to_state,
+                    actor=actor, actor_role="admin",
+                )
+                data["taskTransition"] = _project(_task_dict(t), f.selections)
+            elif f.name == "wikiPageUpsert":
+                slug = f.args.get("slug")
+                title = str(f.args.get("title", ""))
+                body = str(f.args.get("body", ""))
+                page = wiki_mod.upsert_page(
+                    sess, team_id=team_id, title=title, body=body,
+                    slug=slug, actor=actor,
+                )
+                data["wikiPageUpsert"] = _project({
+                    "id": page.id, "slug": page.slug, "title": page.title,
+                    "summary": page.summary,
+                    "current_revision_id": page.current_revision_id,
+                }, f.selections)
+            else:
+                errors.append({"message": f"unknown mutation: {f.name!r}"})
+        except Exception as exc:
+            log.warning("graphql mutation error in %r", f.name, exc_info=True)
+            errors.append({
+                "message": f"{f.name}: {type(exc).__name__}: {exc}"[:200]
+            })
     return {"data": data, "errors": errors}

@@ -22,16 +22,21 @@ from . import __version__
 from . import (
     analytics as analytics_mod,
     acl as acl_mod,
+    automation as automation_mod,
+    backup as backup_mod,
     calendar_feed,
     collab as collab_mod,
     copilot as copilot_mod,
     csv_export,
     dag,
+    dashboards as dashboards_mod,
     exports,
+    forecasting as forecasting_mod,
     graph as graph_mod,
     graphql_api,
     i18n,
     jobs as jobs_mod,
+    links as links_mod,
     metrics,
     models,
     notif_prefs,
@@ -50,7 +55,9 @@ from . import (
     timetravel,
     vector_index_v2,
     verification,
+    watchers as watchers_mod,
     webhooks as webhooks_mod,
+    wiki as wiki_mod,
     workflows as workflows_mod,
     ws as ws_mod,
 )
@@ -176,6 +183,43 @@ class _PluginInstallIn(_BM):
 class _PluginEnableIn(_BM):
     enabled: bool
 
+
+# v0.10 input bodies
+class _RuleIn(_BM):
+    name: str
+    trigger_event: str
+    actions: list[dict]
+    condition: dict | None = None
+    enabled: bool = True
+
+
+class _BackupRestoreIn(_BM):
+    envelope: dict
+    secret: str
+    new_slug: str | None = None
+
+
+class _DashboardIn(_BM):
+    slug: str
+    name: str
+    layout: list
+    is_default: bool = False
+
+
+# v0.11 input bodies
+class _WikiUpsertIn(_BM):
+    title: str
+    body: str = ""
+    slug: str | None = None
+    summary: str | None = None
+
+
+class _WatchIn(_BM):
+    entity_type: str
+    entity_id: int
+    delivery: str = "feed"
+
+
 WEB_DIR = Path(__file__).parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
@@ -216,13 +260,16 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.9.0",
+        version="0.11.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
-            "experiments, and evidence. v0.9 adds an AI Copilot, plugin "
-            "marketplace, persistent vector index, read-replica routing, "
-            "time-travel queries, PWA install, and i18n (en/es/fr)."
+            "experiments, and evidence. v0.10 adds a tamper-evident audit "
+            "chain, signed backup/restore, an automation-rules engine, "
+            "burndown forecasting, and customisable dashboards. v0.11 adds "
+            "a knowledge-base wiki with backlinks, smart entity links, "
+            "GraphQL mutations, watchers + activity feed, and a "
+            "TypeScript SDK."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -248,6 +295,13 @@ def create_app() -> FastAPI:
             {"name": "vector", "description": "Persistent HNSW-style vector index (v0.9)."},
             {"name": "timetravel", "description": "?as_of= queries for historical state (v0.9)."},
             {"name": "i18n", "description": "Localised UI catalogues (v0.9)."},
+            {"name": "automation", "description": "Declarative when/then rules engine (v0.10)."},
+            {"name": "backup", "description": "Signed full-team backup & restore (v0.10)."},
+            {"name": "forecast", "description": "Sprint completion ETAs and per-task forecasts (v0.10)."},
+            {"name": "dashboards", "description": "Per-key customisable widget layouts (v0.10)."},
+            {"name": "wiki", "description": "Markdown knowledge-base with backlinks and history (v0.11)."},
+            {"name": "links", "description": "Smart entity links: #task-N, [[Page]], @handle (v0.11)."},
+            {"name": "watchers", "description": "Per-key entity subscriptions and activity feed (v0.11)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -1657,6 +1711,329 @@ def create_app() -> FastAPI:
     @app.get("/readyz/replicas", tags=["system"])
     def replica_health_route() -> dict:
         return replica_mod.health()
+
+    # ====================================================================
+    # v0.10 — Audit chain, backup/restore, automation, forecasting, dashboards
+    # ====================================================================
+
+    # ------------------------------------------------------------ Audit chain
+    @app.get("/api/audit/verify", tags=["admin"],
+             dependencies=[Depends(require_role("admin"))])
+    def audit_verify_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return audit_mod.verify_chain(db, team_id=team.id)
+
+    @app.get("/api/audit/events", tags=["admin"])
+    def audit_events_route(
+        limit: int = 50,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = watchers_mod.feed(db, team_id=team.id, api_key_id=None,
+                                 limit=limit)
+        return {"events": rows}
+
+    # ------------------------------------------------------------ Backup
+    @app.post("/api/admin/backup", tags=["backup"],
+              dependencies=[Depends(require_role("admin"))])
+    def backup_route(
+        secret: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return backup_mod.make_backup(db, team_id=team.id, secret=secret)
+
+    @app.post("/api/admin/restore/preview", tags=["backup"],
+              dependencies=[Depends(require_role("admin"))])
+    def restore_preview_route(
+        payload: _BackupRestoreIn,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return backup_mod.preview_restore(payload.envelope, secret=payload.secret)
+
+    @app.post("/api/admin/restore/apply", status_code=201, tags=["backup"],
+              dependencies=[Depends(require_role("admin"))])
+    def restore_apply_route(
+        payload: _BackupRestoreIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not payload.new_slug:
+            raise LFValidationError("new_slug is required")
+        result = backup_mod.restore_into_new_team(
+            db, envelope=payload.envelope, secret=payload.secret,
+            new_slug=payload.new_slug,
+        )
+        audit_mod.record(
+            db, team_id=team.id, actor=_actor_label(request),
+            action="admin.restore", entity_type="team",
+            entity_id=result["team_id"],
+            metadata={"new_slug": payload.new_slug,
+                      "row_total": sum(result["inserted"].values())},
+        )
+        return result
+
+    # ------------------------------------------------------------ Automation rules
+    @app.get("/api/automation/rules", tags=["automation"])
+    def rules_list_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rules = automation_mod.list_rules(db, team_id=team.id)
+        import json as _j
+        return {"rules": [{
+            "id": r.id, "name": r.name, "trigger_event": r.trigger_event,
+            "condition": _j.loads(r.condition_json) if r.condition_json else None,
+            "actions": _j.loads(r.actions_json),
+            "enabled": r.enabled, "fires": r.fires,
+            "last_fired_at": r.last_fired_at.isoformat() if r.last_fired_at else None,
+        } for r in rules]}
+
+    @app.post("/api/automation/rules", status_code=201, tags=["automation"],
+              dependencies=[Depends(require_role("admin"))])
+    def rules_create_route(
+        payload: _RuleIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rule = automation_mod.create_rule(
+            db, team_id=team.id, name=payload.name,
+            trigger_event=payload.trigger_event,
+            actions=payload.actions, condition=payload.condition,
+            enabled=payload.enabled,
+        )
+        audit_mod.record(
+            db, team_id=team.id, actor=_actor_label(request),
+            action="automation.rule.upsert", entity_type="rule",
+            entity_id=rule.id, metadata={"name": rule.name},
+        )
+        return {"id": rule.id, "name": rule.name, "enabled": rule.enabled}
+
+    @app.delete("/api/automation/rules/{name}", tags=["automation"],
+                dependencies=[Depends(require_role("admin"))])
+    def rules_delete_route(
+        name: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        automation_mod.delete_rule(db, team_id=team.id, name=name)
+        audit_mod.record(
+            db, team_id=team.id, actor=_actor_label(request),
+            action="automation.rule.deleted", entity_type="rule",
+            entity_id=None, metadata={"name": name},
+        )
+        return {"ok": True}
+
+    # ------------------------------------------------------------ Forecasting
+    @app.get("/api/forecast/sprint/{slug}", tags=["forecast"])
+    def forecast_sprint_route(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return forecasting_mod.sprint_forecast(db, team_id=team.id, slug=slug)
+
+    @app.get("/api/forecast/task/{task_id}", tags=["forecast"])
+    def forecast_task_route(
+        task_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return forecasting_mod.task_eta(db, team_id=team.id, task_id=task_id)
+
+    # ------------------------------------------------------------ Dashboards
+    @app.get("/api/dashboards/widgets", tags=["dashboards"])
+    def dashboards_widgets_route() -> dict:
+        return {"widgets": dashboards_mod.widget_catalogue()}
+
+    @app.get("/api/dashboards", tags=["dashboards"])
+    def dashboards_list_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = dashboards_mod.list_dashboards(db, team_id=team.id)
+        import json as _j
+        return {"dashboards": [{
+            "id": d.id, "slug": d.slug, "name": d.name,
+            "is_default": d.is_default,
+            "layout": _j.loads(d.layout_json),
+            "owner_key_id": d.owner_key_id,
+            "updated_at": d.updated_at.isoformat(),
+        } for d in rows]}
+
+    @app.post("/api/dashboards", status_code=201, tags=["dashboards"])
+    def dashboards_upsert_route(
+        payload: _DashboardIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        d = dashboards_mod.upsert_dashboard(
+            db, team_id=team.id,
+            owner_key_id=getattr(request.state, "api_key_id", None),
+            slug=payload.slug, name=payload.name, layout=payload.layout,
+            is_default=payload.is_default,
+        )
+        return {"id": d.id, "slug": d.slug, "name": d.name,
+                "is_default": d.is_default}
+
+    @app.get("/api/dashboards/{slug}/data", tags=["dashboards"])
+    def dashboards_render_route(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return dashboards_mod.render(db, team_id=team.id, slug=slug)
+
+    # ====================================================================
+    # v0.11 — Wiki, smart links, watchers/feed, GraphQL mutations
+    # ====================================================================
+
+    # ------------------------------------------------------------ Wiki
+    @app.get("/api/wiki/pages", tags=["wiki"])
+    def wiki_list_route(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = wiki_mod.list_pages(db, team_id=team.id)
+        return {"pages": [{
+            "id": p.id, "slug": p.slug, "title": p.title,
+            "summary": p.summary,
+            "updated_at": p.updated_at.isoformat(),
+        } for p in rows]}
+
+    @app.post("/api/wiki/pages", status_code=201, tags=["wiki"])
+    def wiki_upsert_route(
+        payload: _WikiUpsertIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        p = wiki_mod.upsert_page(
+            db, team_id=team.id, title=payload.title, body=payload.body,
+            slug=payload.slug, summary=payload.summary,
+            actor=_actor_label(request),
+        )
+        return {"id": p.id, "slug": p.slug, "title": p.title,
+                "current_revision_id": p.current_revision_id}
+
+    @app.get("/api/wiki/pages/{slug}", tags=["wiki"])
+    def wiki_get_route(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        p = wiki_mod.get_page(db, team_id=team.id, slug=slug)
+        backlinks = links_mod.backlinks_for(
+            db, team_id=team.id, target_type="wiki", target_id=p.id,
+        )
+        return {
+            "id": p.id, "slug": p.slug, "title": p.title,
+            "summary": p.summary, "body": p.body,
+            "current_revision_id": p.current_revision_id,
+            "updated_at": p.updated_at.isoformat(),
+            "backlinks": backlinks,
+        }
+
+    @app.delete("/api/wiki/pages/{slug}", tags=["wiki"],
+                dependencies=[Depends(require_role("member"))])
+    def wiki_delete_route(
+        slug: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        wiki_mod.soft_delete(db, team_id=team.id, slug=slug,
+                             actor=_actor_label(request))
+        return {"ok": True}
+
+    @app.get("/api/wiki/pages/{slug}/revisions", tags=["wiki"])
+    def wiki_revisions_route(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        revs = wiki_mod.revisions_for(db, team_id=team.id, slug=slug)
+        return {"revisions": [{
+            "id": r.id, "title": r.title, "author": r.author,
+            "created_at": r.created_at.isoformat(),
+        } for r in revs]}
+
+    @app.get("/api/wiki/search", tags=["wiki"])
+    def wiki_search_route(
+        q: str, limit: int = 20,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        hits = wiki_mod.search(db, team_id=team.id, q=q, limit=limit)
+        return {"hits": [{
+            "slug": p.slug, "title": p.title, "summary": p.summary,
+        } for p in hits]}
+
+    # ------------------------------------------------------------ Backlinks
+    @app.get("/api/links/backlinks", tags=["links"])
+    def backlinks_route(
+        target_type: str, target_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"backlinks": links_mod.backlinks_for(
+            db, team_id=team.id,
+            target_type=target_type, target_id=target_id,
+        )}
+
+    # ------------------------------------------------------------ Watchers
+    @app.get("/api/watchers", tags=["watchers"])
+    def watchers_list_route(
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        kid = getattr(request.state, "api_key_id", None) or 0
+        rows = watchers_mod.list_watches(db, team_id=team.id, api_key_id=kid)
+        return {"watches": [{
+            "id": w.id, "entity_type": w.entity_type,
+            "entity_id": w.entity_id, "delivery": w.delivery,
+        } for w in rows]}
+
+    @app.post("/api/watchers", status_code=201, tags=["watchers"])
+    def watchers_add_route(
+        payload: _WatchIn, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        kid = getattr(request.state, "api_key_id", None) or 0
+        w = watchers_mod.add_watch(
+            db, team_id=team.id, api_key_id=kid,
+            entity_type=payload.entity_type, entity_id=payload.entity_id,
+            delivery=payload.delivery,
+        )
+        return {"id": w.id, "delivery": w.delivery}
+
+    @app.delete("/api/watchers", tags=["watchers"])
+    def watchers_remove_route(
+        entity_type: str, entity_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        kid = getattr(request.state, "api_key_id", None) or 0
+        ok = watchers_mod.remove_watch(
+            db, team_id=team.id, api_key_id=kid,
+            entity_type=entity_type, entity_id=entity_id,
+        )
+        return {"ok": ok}
+
+    @app.get("/api/feed", tags=["watchers"])
+    def feed_route(
+        request: Request, limit: int = 50,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        kid = getattr(request.state, "api_key_id", None)
+        events = watchers_mod.feed(
+            db, team_id=team.id, api_key_id=kid, limit=limit,
+        )
+        return {"events": events}
 
     return app
 

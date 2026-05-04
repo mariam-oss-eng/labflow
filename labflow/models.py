@@ -312,6 +312,13 @@ class AuditEvent(Base):
     entity_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    # v0.10 — tamper-evident hash chain. ``prev_hash`` is the entry_hash of
+    # the previous audit row for the same team (or 64 zeros for genesis);
+    # ``entry_hash`` = sha256(canonical(prev_hash | row payload)). Both
+    # columns are nullable for back-compat with rows written before v0.10;
+    # the verifier treats NULL as "unchecked" rather than "broken".
+    prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    entry_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
 class WebhookSubscription(Base):
@@ -765,3 +772,147 @@ class VectorIndexShard(Base):
     built_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
 
+
+
+# ---------------------------------------------------------------------------
+# v0.10 — automation rules, dashboards
+# ---------------------------------------------------------------------------
+class AutomationRule(Base):
+    """Declarative when/then rule (v0.10).
+
+    A rule has a trigger event name, an optional JSON condition, and a
+    list of actions. Actions are dispatched by ``automation.dispatch``
+    when an event with a matching name is published. Rules are JSON-only
+    so operators can add/remove them without a code deploy.
+    """
+
+    __tablename__ = "automation_rules"
+    __table_args__ = (
+        UniqueConstraint("team_id", "name", name="uq_rule_team_name"),
+        Index("ix_rule_team_event", "team_id", "trigger_event"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(64))
+    trigger_event: Mapped[str] = mapped_column(String(64))
+    condition_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actions_json: Mapped[str] = mapped_column(Text)  # list of {kind, params}
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    fires: Mapped[int] = mapped_column(Integer, default=0)
+    last_fired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class Dashboard(Base):
+    """Per-key customisable dashboard layout (v0.10)."""
+
+    __tablename__ = "dashboards"
+    __table_args__ = (
+        UniqueConstraint("team_id", "owner_key_id", "slug",
+                         name="uq_dashboard_team_owner_slug"),
+        Index("ix_dashboard_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    owner_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    slug: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
+    layout_json: Mapped[str] = mapped_column(Text)  # list of widget specs
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.11 — knowledge base, watchers, entity links
+# ---------------------------------------------------------------------------
+class WikiPage(Base):
+    """A markdown wiki page (v0.11). Slug-addressed, soft-deletable.
+
+    The ``current_revision_id`` points at the active body; ``WikiRevision``
+    is the immutable history. Backlinks are materialised in
+    ``EntityLink`` so they survive renames.
+    """
+
+    __tablename__ = "wiki_pages"
+    __table_args__ = (
+        UniqueConstraint("team_id", "slug", name="uq_wiki_team_slug"),
+        Index("ix_wiki_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    slug: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    current_revision_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class WikiRevision(Base):
+    """Immutable revision row for :class:`WikiPage` (v0.11)."""
+
+    __tablename__ = "wiki_revisions"
+    __table_args__ = (Index("ix_wiki_rev_page", "page_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    page_id: Mapped[int] = mapped_column(ForeignKey("wiki_pages.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    author: Mapped[str] = mapped_column(String(128), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class EntityLink(Base):
+    """Materialised cross-reference parsed from text (v0.11).
+
+    Triggered by the smart-link parser on transcript / comment / wiki
+    saves. ``source_type/id`` -> ``target_type/id`` with a ``kind`` of
+    ``mention`` (@handle), ``ref`` (#task-123), or ``wikilink`` ([[Page]]).
+    """
+
+    __tablename__ = "entity_links"
+    __table_args__ = (
+        Index("ix_link_source", "team_id", "source_type", "source_id"),
+        Index("ix_link_target", "team_id", "target_type", "target_id"),
+        UniqueConstraint("team_id", "source_type", "source_id",
+                         "target_type", "target_id", "kind",
+                         name="uq_entity_link"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[int] = mapped_column(Integer)
+    target_type: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16))  # mention|ref|wikilink
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class Watcher(Base):
+    """Per-key subscription to entity-change events (v0.11)."""
+
+    __tablename__ = "watchers"
+    __table_args__ = (
+        UniqueConstraint("team_id", "api_key_id", "entity_type", "entity_id",
+                         name="uq_watcher"),
+        Index("ix_watcher_entity", "team_id", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="CASCADE")
+    )
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[int] = mapped_column(Integer)
+    delivery: Mapped[str] = mapped_column(String(16), default="feed")  # feed|email|slack
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
