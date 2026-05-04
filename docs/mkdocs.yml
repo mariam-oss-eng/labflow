@@ -93,6 +93,10 @@ nav:
           - "0008 · Read-replica routing": adr/0008-replica-routing.md
           - "0009 · Copilot tool agent": adr/0009-copilot-tool-agent.md
           - "0010 · Plugin marketplace": adr/0010-plugin-marketplace.md
+          - "0011 · Tamper-evident audit chain": adr/0011-tamper-evident-audit-chain.md
+          - "0012 · Automation rules engine": adr/0012-automation-rules.md
+          - "0013 · Wiki & smart links": adr/0013-wiki-and-smart-links.md
+          - "0014 · GraphQL mutations": adr/0014-graphql-mutations.md
   - Reference:
       - REST API: api.md
       - GraphQL: graphql.md
@@ -112,4 +116,12 @@ nav:
       - Multi-region: multi-region.md
       - PWA: pwa.md
       - i18n: i18n.md
+  - "v0.10 — Trust & insights":
+      - Audit chain & verification: audit_chain.md
+      - Backup & restore: backup.md
+      - Automation rules: automation.md
+      - Forecasting & dashboards: forecasting_and_dashboards.md
+  - "v0.11 — Knowledge & polish":
+      - Wiki & smart links: wiki.md
+      - Watchers & activity feed: watchers.md
   - Changelog: changelog.md

@@ -87,7 +87,7 @@ def _w_recent_decisions(sess: Session, *, team_id: int, params: dict) -> dict:
     ).scalars().all()
     return {
         "items": [
-            {"id": d.id, "summary": d.summary, "rationale": d.rationale}
+            {"id": d.id, "statement": d.statement, "rationale": d.rationale}
             for d in rows
         ],
         "count": len(rows),

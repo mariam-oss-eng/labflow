@@ -16,3 +16,7 @@ when a decision is reversed, we add a new ADR that supersedes it.
 | [0008](0008-replica-routing.md) | Accepted | Read-replica routing (v0.9) |
 | [0009](0009-copilot-tool-agent.md) | Accepted | AI Copilot as a small tool-using agent (v0.9) |
 | [0010](0010-plugin-marketplace.md) | Accepted | Plugin marketplace v0 — catalogue without sandbox (v0.9) |
+| [0011](0011-tamper-evident-audit-chain.md) | Accepted | Tamper-evident audit chain (v0.10) |
+| [0012](0012-automation-rules.md) | Accepted | Declarative automation rules engine (v0.10) |
+| [0013](0013-wiki-and-smart-links.md) | Accepted | Wiki + smart entity links (v0.11) |
+| [0014](0014-graphql-mutations.md) | Accepted | GraphQL mutations on the hand-rolled engine (v0.11) |

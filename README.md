@@ -4,56 +4,69 @@
 
 **The meeting → execution operating system for research and technical teams.**
 
-[![Tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-235%20passing-brightgreen)](#testing)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.0-6366f1)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.11.0-6366f1)](CHANGELOG.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com)
-[![GraphQL](https://img.shields.io/badge/GraphQL-read--only-e10098)](docs/graphql.md)
+[![GraphQL](https://img.shields.io/badge/GraphQL-query%20%2B%20mutation-e10098)](docs/graphql.md)
 [![WebSocket](https://img.shields.io/badge/WebSocket-bidirectional-2563eb)](docs/realtime.md)
+[![Audit chain](https://img.shields.io/badge/audit-tamper--evident-0f766e)](docs/audit_chain.md)
+[![Automation](https://img.shields.io/badge/automation-rules%20engine-fb923c)](docs/automation.md)
+[![Wiki](https://img.shields.io/badge/wiki-backlinks%20%2B%20history-7c3aed)](docs/wiki.md)
+[![Forecast](https://img.shields.io/badge/forecast-sprint%20ETA-0ea5e9)](docs/forecasting_and_dashboards.md)
 [![AI Copilot](https://img.shields.io/badge/AI-copilot-ff6b6b)](docs/copilot.md)
 [![Plugins](https://img.shields.io/badge/plugin-marketplace-8b5cf6)](docs/plugins.md)
 [![PWA](https://img.shields.io/badge/PWA-installable-0ea5e9)](docs/pwa.md)
 [![i18n](https://img.shields.io/badge/i18n-en%20%C2%B7%20es%20%C2%B7%20fr-22c55e)](docs/i18n.md)
-[![SDK](https://img.shields.io/badge/Python%20SDK-labflow__client-yellow)](labflow_client/)
-[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-optional-425cc7)](docs/observability.md)
-[![Docs](https://img.shields.io/badge/docs-mkdocs--material-9c27b0)](docs/)
+[![Python SDK](https://img.shields.io/badge/Python%20SDK-labflow__client-yellow)](labflow_client/)
+[![TS SDK](https://img.shields.io/badge/TS%20SDK-%40labflow%2Fsdk-3178c6)](sdk/typescript/)
+[![Docs site](https://img.shields.io/badge/docs-mkdocs--material-9c27b0)](https://mariam-oss-eng.github.io/labflow/)
 
 LabFlow turns transcripts, calls, and planning docs into a **typed, queryable
 graph** of decisions, action items, experiments, owners, deadlines, and
-evidence of completion — with workflows, sprints, an AI Copilot,
-plugin marketplace, persistent vector index, time-travel queries,
-read-replica routing, an installable PWA, and a fully-localised UI.
+evidence of completion. v0.10–v0.11 add a **tamper-evident audit chain**,
+**signed backup/restore**, a **declarative automation rules engine**,
+**burndown forecasting**, **customisable dashboards**, a **wiki** with
+backlinks and revision history, **smart entity links**
+(`#task-N` / `[[Page]]` / `@handle`), **GraphQL mutations**, **watchers** with
+an aggregated activity feed, and a hand-written **TypeScript SDK**.
 
 Built for ML research groups, AI/biotech labs, and prototype-heavy startup
 teams. Not another notes app.
 
-[Quickstart](#quickstart) · [Architecture](#architecture) · [What's new in 0.9](#whats-new-in-09) · [Feature matrix](#feature-matrix) · [Documentation](docs/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/)
+[Quickstart](#quickstart) · [Architecture](#architecture) · [What's new in 0.11](#whats-new-in-011) · [Feature matrix](#feature-matrix) · [Documentation](https://mariam-oss-eng.github.io/labflow/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/) · [TypeScript SDK](sdk/typescript/)
 
 </div>
 
 ---
 
-## What's new in 0.9
+## What's new in 0.11
 
-LabFlow 0.9 is the **AI + extensibility** release. The headline:
+LabFlow 0.11 is the **knowledge & polish** release.
 
 | Area | What it does |
 |---|---|
-| 🤖 **AI Copilot** | Multi-step tool-using agent over team data. Ships with a deterministic offline planner *and* a clean LLM hook (`LABFLOW_COPILOT_LLM_CALLABLE`). Every turn is auditable. — [`/api/copilot`](docs/copilot.md) |
-| 🧩 **Plugin marketplace** | Catalogue + install/enable/disable lifecycle for signed manifests (SHA-256 verified, scope-permissioned). — [`/api/plugins`](docs/plugins.md) |
-| ⚡ **Vector index v2** | Pure-Python HNSW-style on-disk shards, snapshot rotation, brute-force fallback, optional cross-encoder re-rank. Zero new deps. — [`/api/vector`](docs/vector.md) |
-| 🌍 **Read-replica routing** | `read_session()` / `write_session()` context managers; round-robin across `LABFLOW_READ_REPLICA_URLS`. — [`/readyz/replicas`](docs/multi-region.md) |
-| ⏳ **Time-travel queries** | `?as_of=ISO` views of meetings/tasks reconstructed from `audit_events`. — [`/api/timetravel`](docs/timetravel.md) |
-| 📱 **Installable PWA** | Manifest + service worker + offline shell. Add-to-home-screen on iOS/Android/desktop. — [`/static/manifest.webmanifest`](docs/pwa.md) |
-| 🗣️ **i18n (en · es · fr)** | RFC 7231 `Accept-Language` negotiation, dict-based catalogue, ready for any new locale by single PR. — [`/api/i18n`](docs/i18n.md) |
+| 📚 **Wiki / knowledge base** | Slug-addressed Markdown pages with **immutable revision history**, soft-delete, and substring search. — [`/api/wiki/pages`](docs/wiki.md) |
+| 🔗 **Smart entity links** | `#task-N`, `[[Page]]`, `@handle` are parsed out of every wiki/comment/transcript and materialised in `entity_links`. **Backlinks** in both directions, instantly. — [`/api/links/backlinks`](docs/wiki.md) |
+| 🛠 **GraphQL mutations** | `commentCreate`, `taskTransition`, `wikiPageUpsert` on the same hand-rolled engine — same scope/role enforcement as REST. — [`/graphql`](docs/graphql.md) |
+| 👀 **Watchers + activity feed** | Per-API-key subscriptions on any entity → aggregated `/api/feed`. Falls back to team-wide audit when the caller has no watches. — [`/api/watchers`](docs/watchers.md) |
+| 📦 **TypeScript SDK** | Hand-written, **zero runtime dependencies**, works in Node ≥18 and modern browsers. — [`@labflow/sdk`](sdk/typescript/) |
+| 🌐 **Public docs site** | mkdocs-material site auto-published to GitHub Pages on every push to `main`. — [labflow docs](https://mariam-oss-eng.github.io/labflow/) |
 
-And v0.8 (just before it) added: **configurable workflows / state machines**,
-**sprints + burndown**, **task DAG + critical path**, **resource ACLs**,
-**signed share links**, **API-key scopes**, **CSV exports**, and a
-**Slack-compatible notifier**.
+## What's new in 0.10
 
-200 tests, all green. Zero new runtime dependencies in either release.
+LabFlow 0.10 is the **trust & insights** release.
+
+| Area | What it does |
+|---|---|
+| 🔐 **Tamper-evident audit chain** | Every `audit_events` row is hash-chained (`prev_hash`/`entry_hash` with SHA-256). One endpoint reports the first row that diverges. — [`/api/audit/verify`](docs/audit_chain.md) |
+| 💾 **Signed backup & restore** | Full-team JSON snapshot signed with `HMAC-SHA256(secret, ...)`. Restores into a *new* slug only — never silently overwrites live data. — [`/api/admin/backup`](docs/backup.md) |
+| ⚙️ **Automation rules engine** | Declarative when/then JSON rules. Three built-in actions (`tag`, `notify`, `webhook`); dispatched synchronously from the audit layer so the chain stays continuous. — [`/api/automation/rules`](docs/automation.md) |
+| 📈 **Forecasting** | Sprint ETA via least-squares on burndown (with ±1σ confidence band) and per-task ETA from owner cycle-time stats. Pure Python. — [`/api/forecast/sprint/{slug}`](docs/forecasting_and_dashboards.md) |
+| 📊 **Customisable dashboards** | Per-API-key widget layouts. Five built-in widget kinds; `/api/dashboards/{slug}/data` renders them in one call. — [`/api/dashboards`](docs/forecasting_and_dashboards.md) |
+
+**235 tests, all green. Zero new runtime dependencies in either release.**
 
 ---
 
@@ -107,12 +120,18 @@ flowchart LR
       R --> CO[AI Copilot]
       R --> PL[Plugin marketplace]
       R --> TT[Time-travel]
+      R --> WK1[Wiki + Smart links]
+      R --> AR[Automation rules]
+      R --> FC[Forecasting + Dashboards]
+      R --> WF[Watchers + Feed]
+      R --> BK[Backup / Restore]
     end
     subgraph Persistence
       P[(Primary DB)]
       RR[(Read replicas)]
       EMB[(embeddings + HNSW shards)]
-      AUD[(audit_events)]
+      AUD[(audit_events &lpar;hash-chained&rpar;)]
+      WP[(wiki_pages + revisions + entity_links)]
     end
     subgraph Async
       JQ[Job queue] --> WK[Worker leader-locked]
@@ -126,6 +145,7 @@ flowchart LR
     R -- reads --> RR
     EX --> EMB
     SR --> EMB
+    WK1 --> WP
     R --> JQ
     R --> WH
     R --> AUD
@@ -170,37 +190,48 @@ labflow digest --weekly
 
 ## Feature matrix
 
-| Capability | v0.1–0.5 | v0.6 | v0.7 | **v0.8** | **v0.9** |
-| --- | :-: | :-: | :-: | :-: | :-: |
-| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Multi-tenancy + API keys + RBAC | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Postgres + Alembic migrations | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Background job queue + worker | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Append-only audit log | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Outbound webhooks (HMAC) + GitHub inbound | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Hybrid keyword + semantic search | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Decision graph + Mermaid render | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Encryption at rest + GDPR export/erase | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Plugin loader (entry-point + dotted) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Comments + reactions + analytics + .ics + summaries | — | ✅ | ✅ | ✅ | ✅ |
-| AI summary + email digest + notification prefs | — | ✅ | ✅ | ✅ | ✅ |
-| WebSocket + GraphQL + OpenTelemetry + Postgres FTS | — | — | ✅ | ✅ | ✅ |
-| Distributed worker leader-lock + Python SDK + Helm | — | — | ✅ | ✅ | ✅ |
-| **Workflows / state machines + SLA breach sweep** | — | — | — | ✅ | ✅ |
-| **Sprints / iterations + burndown** | — | — | — | ✅ | ✅ |
-| **Task DAG + critical-path analytics** | — | — | — | ✅ | ✅ |
-| **Resource ACLs (per-row allow-list)** | — | — | — | ✅ | ✅ |
-| **Signed share links (TTL + passcode)** | — | — | — | ✅ | ✅ |
-| **API-key scopes (OAuth-style)** | — | — | — | ✅ | ✅ |
-| **CSV exports (RFC 4180 + Excel BOM)** | — | — | — | ✅ | ✅ |
-| **Slack-compatible notifier** | — | — | — | ✅ | ✅ |
-| **AI Copilot (multi-step tool agent)** | — | — | — | — | ✅ |
-| **Plugin marketplace (signed manifests)** | — | — | — | — | ✅ |
-| **Vector index v2 (HNSW + re-rank + persist)** | — | — | — | — | ✅ |
-| **Read-replica routing** | — | — | — | — | ✅ |
-| **Time-travel queries (`?as_of=ISO`)** | — | — | — | — | ✅ |
-| **Installable PWA (manifest + SW + offline)** | — | — | — | — | ✅ |
-| **i18n (en · es · fr) with `Accept-Language`** | — | — | — | — | ✅ |
+| Capability | v0.1–0.5 | v0.6 | v0.7 | v0.8 | v0.9 | **v0.10** | **v0.11** |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multi-tenancy + API keys + RBAC | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Postgres + Alembic migrations | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Background job queue + worker | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Append-only audit log | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Outbound webhooks (HMAC) + GitHub inbound | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Hybrid keyword + semantic search | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Decision graph + Mermaid render | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Encryption at rest + GDPR export/erase | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Plugin loader (entry-point + dotted) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Comments + reactions + analytics + .ics + summaries | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AI summary + email digest + notification prefs | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WebSocket + GraphQL + OpenTelemetry + Postgres FTS | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Distributed worker leader-lock + Python SDK + Helm | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Workflows / state machines + SLA breach sweep | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Sprints / iterations + burndown | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Task DAG + critical-path analytics | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Resource ACLs (per-row allow-list) | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Signed share links (TTL + passcode) | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| API-key scopes (OAuth-style) | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| CSV exports (RFC 4180 + Excel BOM) | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Slack-compatible notifier | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| AI Copilot (multi-step tool agent) | — | — | — | — | ✅ | ✅ | ✅ |
+| Plugin marketplace (signed manifests) | — | — | — | — | ✅ | ✅ | ✅ |
+| Vector index v2 (HNSW + re-rank + persist) | — | — | — | — | ✅ | ✅ | ✅ |
+| Read-replica routing | — | — | — | — | ✅ | ✅ | ✅ |
+| Time-travel queries (`?as_of=ISO`) | — | — | — | — | ✅ | ✅ | ✅ |
+| Installable PWA (manifest + SW + offline) | — | — | — | — | ✅ | ✅ | ✅ |
+| i18n (en · es · fr) with `Accept-Language` | — | — | — | — | ✅ | ✅ | ✅ |
+| **Tamper-evident audit hash chain** | — | — | — | — | — | ✅ | ✅ |
+| **Signed full-team backup & restore** | — | — | — | — | — | ✅ | ✅ |
+| **Declarative automation rules engine** | — | — | — | — | — | ✅ | ✅ |
+| **Sprint forecasting (least-squares ETA)** | — | — | — | — | — | ✅ | ✅ |
+| **Customisable dashboards (widget catalogue)** | — | — | — | — | — | ✅ | ✅ |
+| **Wiki / knowledge base + revision history** | — | — | — | — | — | — | ✅ |
+| **Smart entity links (`#task` / `[[Page]]` / `@handle`) + backlinks** | — | — | — | — | — | — | ✅ |
+| **GraphQL mutations** | — | — | — | — | — | — | ✅ |
+| **Watchers + activity feed** | — | — | — | — | — | — | ✅ |
+| **TypeScript SDK (`@labflow/sdk`, zero deps)** | — | — | — | — | — | — | ✅ |
+| **GitHub Pages docs site (mkdocs-material)** | — | — | — | — | — | — | ✅ |
 
 ## Configuration
 
@@ -240,6 +271,19 @@ Every setting reads from environment variables (12-factor):
 | `GET`  | `/api/stream` | Server-Sent Events stream for the team |
 | `WS`   | `/ws` | **Bidirectional** realtime channel _(v0.7)_ |
 | `POST` | `/graphql` | Read-only GraphQL endpoint _(v0.7)_ |
+| `GET`  | `/api/audit/verify` | **Walks the hash chain & reports first divergence** _(v0.10)_ |
+| `POST` | `/api/admin/backup` | **Signed full-team JSON backup** _(v0.10)_ |
+| `POST` | `/api/admin/restore/{preview,apply}` | **Restore into a new team slug** _(v0.10)_ |
+| `GET`/`POST`/`DELETE` | `/api/automation/rules` | **Declarative automation rules CRUD** _(v0.10)_ |
+| `GET`  | `/api/forecast/sprint/{slug}` | **Sprint completion ETA** _(v0.10)_ |
+| `GET`  | `/api/forecast/task/{id}` | **Per-task ETA from cycle-time stats** _(v0.10)_ |
+| `GET`/`POST` | `/api/dashboards` | **Customisable widget layouts** _(v0.10)_ |
+| `GET`  | `/api/dashboards/{slug}/data` | **Render a dashboard in one call** _(v0.10)_ |
+| `GET`/`POST`/`DELETE` | `/api/wiki/pages` | **Markdown wiki + revisions + soft-delete** _(v0.11)_ |
+| `GET`  | `/api/wiki/search?q=` | **Wiki substring search** _(v0.11)_ |
+| `GET`  | `/api/links/backlinks?target_type=&target_id=` | **Bidirectional smart-link backlinks** _(v0.11)_ |
+| `GET`/`POST`/`DELETE` | `/api/watchers` | **Per-API-key entity subscriptions** _(v0.11)_ |
+| `GET`  | `/api/feed` | **Aggregated activity feed for the caller** _(v0.11)_ |
 | `GET`  | `/api/me` | Caller's identity, role, and posture |
 | `GET`  | `/api/admin/export` | GDPR Article 15 export of every team row |
 | `DELETE` | `/api/admin/erase` | GDPR Article 17 hard-delete (admin only) |
@@ -262,6 +306,27 @@ print(lf.analytics(days=14)["cycle_time_p50_days"])
 
 The SDK ships sync + async clients, uses `httpx` when installed and falls
 back to the stdlib `urllib` so it works in any environment.
+
+## TypeScript SDK
+
+```ts
+import { LabFlowClient } from "@labflow/sdk";
+
+const client = new LabFlowClient({
+  baseUrl: "https://labflow.example.com",
+  apiKey: process.env.LABFLOW_API_KEY,
+});
+
+await client.upsertWikiPage({
+  title: "Sprint 3 plan",
+  body: "Owner: @alice. See [[Architecture]] and #task-42.",
+});
+const forecast = await client.forecastSprint("sprint-3");
+console.log(`ETA: ${forecast.eta_iso} (±${forecast.confidence_days}d)`);
+```
+
+Hand-written, **zero runtime dependencies**, works in Node ≥18 and modern
+browsers. See [`sdk/typescript/`](sdk/typescript/).
 
 ## GraphQL
 
@@ -298,22 +363,29 @@ event catalog.
 ## Testing
 
 ```bash
-pytest          # 154 tests, ~11s on a laptop
-pytest -k v06   # subset
+pytest          # 235 tests, ~30s on a laptop
+pytest -k v10   # subset (audit chain, backup, automation, forecast, dashboards)
+pytest -k v11   # subset (wiki, smart links, watchers, graphql mutations)
 ```
 
 Coverage spans model logic, API contract, RBAC, encryption round-trip,
 idempotency replay, rate-limit headers, hybrid search ranking, decision
 graph rendering, plugin loading, retention sweep, Slack payload,
 collaboration (comments/reactions/saved-searches), iCalendar feed,
-TextRank summary, GraphQL query/introspection/error reporting, WebSocket
-hello/subscribe/ping, distributed worker lock acquire/heartbeat/steal,
-and the Python SDK against an in-memory app.
+TextRank summary, GraphQL query/mutation/introspection/error reporting,
+WebSocket hello/subscribe/ping, distributed worker lock
+acquire/heartbeat/steal, the Python SDK against an in-memory app, the
+audit hash-chain verifier (incl. tamper detection), backup signature
+round-trip, automation rule firing, sprint + per-task ETA estimators,
+dashboard widget rendering, wiki revisions + soft-delete, smart-link
+materialisation + backlinks, and watchers/feed.
 
 ## Documentation
 
 The full documentation site is built with [MkDocs Material](docs/mkdocs.yml)
-and published to GitHub Pages on every push to `main`.
+and **published live at <https://mariam-oss-eng.github.io/labflow/>** on
+every push to `main` via the [`pages.yml`](.github/workflows/pages.yml)
+workflow.
 
 * [Operations runbook](docs/operations.md)
 * [Onboarding guide](docs/onboarding.md)

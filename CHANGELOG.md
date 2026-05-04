@@ -3,6 +3,84 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] — 2026-05-04
+### Added — Knowledge base, smart links, GraphQL mutations, watchers, SDK
+- **Wiki / knowledge base** at `/api/wiki/pages`. Slug-addressed markdown
+  pages with immutable revision history (`wiki_revisions` table) and
+  soft-delete. Every save writes a new revision row so the history is
+  complete from page #1.
+- **Smart entity links** (`labflow.links`). A regex-based parser
+  materialises three patterns into the new `entity_links` table on every
+  wiki / comment / transcript save:
+  - `#task-123` → `ref` link to a `Task`
+  - `[[Page Name]]` → `wikilink` to a `WikiPage` (auto-creates a
+    placeholder page so forward links survive write order)
+  - `@handle` → `mention` of an `Owner`
+  Backlinks are queryable at `/api/links/backlinks?target_type=&target_id=`.
+- **GraphQL mutations** (v0.7's hand-rolled engine, extended). Three
+  mutations land in this release: `commentCreate`, `taskTransition`,
+  `wikiPageUpsert`. They share the same scope/role enforcement as the
+  REST equivalents — the GraphQL layer is a thin façade over the same
+  service functions. ADR-0014.
+- **Watchers + activity feed**. Per-API-key subscriptions on any entity
+  (`task`, `decision`, `meeting`, `wiki`, etc.) at `/api/watchers`; the
+  aggregated stream is at `/api/feed`. When the calling key has no
+  watches, `/api/feed` falls back to the team-wide audit log so admins
+  can see everything without bookkeeping.
+- **TypeScript client SDK** (`sdk/typescript/`). Hand-curated, dependency-free
+  client (~150 lines) covering the 80% common path: meetings, tasks,
+  decisions, wiki, search, and dashboards. Built with `tsc`, no runtime
+  dependencies, suitable for both Node and browser.
+- **GitHub Pages** — the docs site at
+  https://mariam-oss-eng.github.io/labflow/ is now built and published
+  from the `pages.yml` workflow on every push to `main`.
+
+### Changed
+- The `parse()` function in `labflow.graphql_api` now records the
+  operation kind (`query` vs `mutation`) on the parser. Existing
+  callers using the public function are unaffected — the back-compat
+  signature is preserved; new callers can use `parse_with_op` to access
+  the operation kind.
+
+### Migration
+- `f4c5d77ef2c3` — adds `wiki_pages`, `wiki_revisions`, `entity_links`,
+  and `watchers`. (Same migration also covers v0.10.) Backward
+  compatible: no existing data is mutated.
+
+## [0.10.0] — 2026-05-04
+### Added — Tamper-evident audit, signed backups, automation, forecasting, dashboards
+- **Tamper-evident audit chain** in `audit_events`. Every row carries
+  `prev_hash` (= previous row's `entry_hash` for the same team) and
+  `entry_hash` (= sha256 over the canonical row payload). The new
+  `/api/audit/verify` endpoint walks the chain and reports the first
+  break. Pre-v0.10 NULL-hash rows are treated as legacy genesis pivots
+  so upgraded databases keep verification meaningful. ADR-0011.
+- **Signed full-team backup & restore** at `/api/admin/backup` and
+  `/api/admin/restore/{preview,apply}`. The envelope is HMAC-SHA256
+  signed with an operator-supplied secret; restore requires a
+  *different* slug so a recovery never silently overwrites live data.
+  Dependency-free (no compression / encryption layer baked in — pipe
+  through `age` / `gpg` if you need confidentiality at rest).
+- **Automation rules engine** at `/api/automation/rules`. Declarative
+  when/then JSON rules with three built-in action kinds (`tag`,
+  `notify`, `webhook`). The dispatcher is invoked from `audit.record`
+  so any audited action can trigger automation; rule failures are
+  logged but never block the underlying state change. ADR-0012.
+- **Burndown forecasting** at `/api/forecast/sprint/{slug}` (least-squares
+  ETA + ±1σ confidence band) and `/api/forecast/task/{id}` (per-task
+  ETA from owner's median historical cycle time, with a team-wide
+  fallback). Pure Python — no scipy / numpy dependency.
+- **Customisable dashboards** at `/api/dashboards`. Per-API-key widget
+  layouts; the server ships a five-widget catalogue (`open_tasks`,
+  `recent_decisions`, `sla_breaches`, `sprint_burndown`,
+  `automation_status`) that the `/api/dashboards/{slug}/data` endpoint
+  renders into a single response.
+
+### Migration
+- `f4c5d77ef2c3` — adds `prev_hash` + `entry_hash` columns to
+  `audit_events` (both nullable, so legacy rows remain valid),
+  `automation_rules`, and `dashboards`. No existing data is rewritten.
+
 ## [0.9.0] — 2026-04-30
 ### Added — AI, Plugins, Vector v2, Multi-region, Time-travel, PWA & i18n
 - **AI Copilot** at `/api/copilot`. Multi-step *tool-using* agent over the
