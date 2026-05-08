@@ -260,7 +260,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.11.0",
+        version="0.13.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
@@ -269,7 +269,11 @@ def create_app() -> FastAPI:
             "burndown forecasting, and customisable dashboards. v0.11 adds "
             "a knowledge-base wiki with backlinks, smart entity links, "
             "GraphQL mutations, watchers + activity feed, and a "
-            "TypeScript SDK."
+            "TypeScript SDK. v0.12 adds an interactive Kanban board, "
+            "recurring tasks, per-key API quotas, bulk task operations, "
+            "and per-key digest scheduling. v0.13 adds federated guest "
+            "invites with scoped ACLs, declarative smart-list filters, "
+            "Markdown bundle export, and an interactive CLI REPL."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -302,6 +306,12 @@ def create_app() -> FastAPI:
             {"name": "wiki", "description": "Markdown knowledge-base with backlinks and history (v0.11)."},
             {"name": "links", "description": "Smart entity links: #task-N, [[Page]], @handle (v0.11)."},
             {"name": "watchers", "description": "Per-key entity subscriptions and activity feed (v0.11)."},
+            {"name": "board", "description": "Kanban-style task board over a workflow (v0.12)."},
+            {"name": "recurring", "description": "Templates that materialise tasks on a cadence (v0.12)."},
+            {"name": "quotas", "description": "Per-API-key daily request quotas (v0.12)."},
+            {"name": "notifications", "description": "Per-key digest cadence and scheduling (v0.12)."},
+            {"name": "invites", "description": "Federated guest invites with scoped ACLs (v0.13)."},
+            {"name": "smart-lists", "description": "Saved declarative task filters (v0.13)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -2034,6 +2044,374 @@ def create_app() -> FastAPI:
             db, team_id=team.id, api_key_id=kid, limit=limit,
         )
         return {"events": events}
+
+    # ====================================================================
+    # v0.12 — boards, recurring tasks, quotas, bulk ops, digest hour
+    # ====================================================================
+    from . import (  # noqa: PLC0415
+        boards as boards_mod,
+        bulk_tasks as bulk_mod,
+        invites as invites_mod,
+        notif_prefs as notif_prefs_mod,
+        quotas as quotas_mod,
+        recurring as recurring_mod,
+        smart_lists as smart_lists_mod,
+        bundle as bundle_mod,
+    )
+    from .auth import generate_api_key, hash_api_key  # noqa: PLC0415
+
+    def _resolve_or_create_default_key(sess, *, team_id: int) -> int:
+        """Return an API key id for ``team_id`` — used by routes that need
+        a key context (notification prefs, watchers) when running in
+        single-team / no-auth mode where no key was sent on the request.
+        Picks the most recently created live key, or mints one named
+        ``default-noauth`` if the team has none."""
+        key = sess.execute(
+            select(models.ApiKey)
+            .where(models.ApiKey.team_id == team_id,
+                   models.ApiKey.revoked_at.is_(None))
+            .order_by(models.ApiKey.id.asc())
+        ).scalars().first()
+        if key is not None:
+            return key.id
+        plaintext = generate_api_key()
+        key = models.ApiKey(
+            team_id=team_id, name="default-noauth",
+            key_hash=hash_api_key(plaintext),
+        )
+        sess.add(key)
+        sess.flush()
+        return key.id
+
+    # ---- kanban board -------------------------------------------------
+    @app.get("/api/board/{workflow_slug}", tags=["board"])
+    def board_route(
+        workflow_slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        slug = workflow_slug if workflow_slug != "_default" else None
+        return boards_mod.board_for_workflow(db, team_id=team.id, workflow_slug=slug)
+
+    @app.get("/app/board/{workflow_slug}", response_class=HTMLResponse,
+             include_in_schema=False)
+    def board_html(
+        workflow_slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        slug = workflow_slug if workflow_slug != "_default" else None
+        board = boards_mod.board_for_workflow(db, team_id=team.id, workflow_slug=slug)
+        return HTMLResponse(boards_mod.render_html(board, team_slug=team.slug))
+
+    # ---- recurring tasks ---------------------------------------------
+    @app.get("/api/recurring-tasks", tags=["recurring"])
+    def recurring_list(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = recurring_mod.list_templates(db, team_id=team.id)
+        return {"items": [{
+            "id": r.id, "slug": r.slug, "cadence": r.cadence,
+            "interval": r.interval, "day_of_week": r.day_of_week,
+            "day_of_month": r.day_of_month,
+            "template_title": r.template_title,
+            "template_owner_id": r.template_owner_id,
+            "template_priority": r.template_priority,
+            "next_run_at": r.next_run_at.isoformat(),
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "active": r.active,
+        } for r in rows]}
+
+    @app.post("/api/recurring-tasks", status_code=201, tags=["recurring"],
+              dependencies=[Depends(require_role("admin"))])
+    def recurring_create(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        slug = payload.pop("slug", None) or ""
+        actor = getattr(request.state, "actor", "system")
+        rt = recurring_mod.create_template(
+            db, team_id=team.id, slug=str(slug), payload=payload, actor=actor,
+        )
+        return {"id": rt.id, "slug": rt.slug,
+                "next_run_at": rt.next_run_at.isoformat()}
+
+    @app.delete("/api/recurring-tasks/{slug}", tags=["recurring"],
+                dependencies=[Depends(require_role("admin"))])
+    def recurring_delete(
+        slug: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        recurring_mod.delete_template(db, team_id=team.id, slug=slug, actor=actor)
+        return {"ok": True}
+
+    @app.post("/api/recurring-tasks/run", tags=["recurring"],
+              dependencies=[Depends(require_role("admin"))])
+    def recurring_run(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        created = recurring_mod.materialize_due(db, team_id=team.id)
+        return {"created": [{"id": t.id, "title": t.title} for t in created]}
+
+    # ---- API key quotas ----------------------------------------------
+    @app.get("/api/admin/quotas", tags=["quotas"],
+             dependencies=[Depends(require_role("admin"))])
+    def quotas_list(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"items": [{
+            "api_key_id": q.api_key_id, "daily_limit": q.daily_limit,
+            "updated_at": q.updated_at.isoformat() if q.updated_at else None,
+        } for q in quotas_mod.list_quotas(db, team_id=team.id)]}
+
+    @app.put("/api/admin/quotas/{api_key_id}", tags=["quotas"],
+             dependencies=[Depends(require_role("admin"))])
+    def quotas_set(
+        api_key_id: int, payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict) or "daily_limit" not in payload:
+            raise LFValidationError("body must contain daily_limit")
+        actor = getattr(request.state, "actor", "system")
+        # Confirm the key belongs to this team.
+        key = db.get(models.ApiKey, api_key_id)
+        if key is None or key.team_id != team.id:
+            raise NotFoundError("api key not found")
+        q = quotas_mod.set_quota(
+            db, team_id=team.id, api_key_id=api_key_id,
+            daily_limit=int(payload["daily_limit"]), actor=actor,
+        )
+        return {"api_key_id": q.api_key_id, "daily_limit": q.daily_limit}
+
+    @app.delete("/api/admin/quotas/{api_key_id}", tags=["quotas"],
+                dependencies=[Depends(require_role("admin"))])
+    def quotas_delete_route(
+        api_key_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        quotas_mod.delete_quota(
+            db, team_id=team.id, api_key_id=api_key_id, actor=actor,
+        )
+        return {"ok": True}
+
+    @app.get("/api/admin/quotas/usage", tags=["quotas"],
+             dependencies=[Depends(require_role("admin"))])
+    def quotas_usage(
+        day: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"day": day or quotas_mod._today(),
+                "items": quotas_mod.usage_summary(db, team_id=team.id, day=day)}
+
+    # ---- bulk task operations ----------------------------------------
+    @app.post("/api/tasks/bulk", tags=["tasks"])
+    def tasks_bulk(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        actor = getattr(request.state, "actor", "system")
+        return bulk_mod.apply_bulk(
+            db, team_id=team.id,
+            op=str(payload.get("op", "")),
+            task_ids=payload.get("task_ids") or [],
+            args=payload.get("args"),
+            actor=actor,
+        )
+
+    # ---- digest hour scheduler ---------------------------------------
+    @app.put("/api/notifications/me", tags=["notifications"])
+    def notifications_update_me(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        kid = getattr(request.state, "api_key_id", None)
+        if kid is None:
+            # Single-team / test mode: fall back to the bootstrap key,
+            # creating a placeholder if needed so prefs always have a home.
+            kid = _resolve_or_create_default_key(db, team_id=team.id)
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        row = notif_prefs_mod.update(
+            db, team_id=team.id, api_key_id=kid,
+            digest_cadence=payload.get("digest_cadence"),
+            email=payload.get("email"),
+            muted_events=payload.get("muted_events"),
+            digest_hour_utc=payload.get("digest_hour_utc"),
+        )
+        return notif_prefs_mod.to_dict(row)
+
+    @app.get("/api/notifications/digest-due", tags=["notifications"],
+             dependencies=[Depends(require_role("admin"))])
+    def notifications_digest_due(
+        hour: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = notif_prefs_mod.keys_due_for_digest(
+            db, team_id=team.id, hour_utc=hour,
+        )
+        return {"hour_utc": hour,
+                "api_key_ids": [r.api_key_id for r in rows]}
+
+    # ====================================================================
+    # v0.13 — invites, smart lists, bundle export
+    # ====================================================================
+
+    def _mint_guest_key(sess, *, team_id: int, name: str, scopes: str | None):
+        plaintext = generate_api_key()
+        row = models.ApiKey(
+            team_id=team_id, name=name,
+            key_hash=hash_api_key(plaintext), scopes=scopes,
+        )
+        sess.add(row)
+        sess.flush()
+        return row, plaintext
+
+    @app.post("/api/invites", status_code=201, tags=["invites"],
+              dependencies=[Depends(require_role("admin"))])
+    def invites_create(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        kid = getattr(request.state, "api_key_id", None)
+        actor = getattr(request.state, "actor", "system")
+        inv, token = invites_mod.create_invite(
+            db, team_id=team.id,
+            email=str(payload.get("email", "")),
+            role=str(payload.get("role", "viewer")),
+            scopes=payload.get("scopes"),
+            acl_entries=payload.get("acl_entries"),
+            ttl_hours=int(payload.get("ttl_hours", 168)),
+            created_by_key_id=kid, actor=actor,
+        )
+        return {"id": inv.id, "email": inv.email, "role": inv.role,
+                "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+                "token": token}  # only returned at creation time
+
+    @app.get("/api/invites", tags=["invites"],
+             dependencies=[Depends(require_role("admin"))])
+    def invites_list(
+        status: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"items": [{
+            "id": i.id, "email": i.email, "status": i.status, "role": i.role,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+            "expires_at": i.expires_at.isoformat() if i.expires_at else None,
+            "accepted_at": i.accepted_at.isoformat() if i.accepted_at else None,
+        } for i in invites_mod.list_invites(db, team_id=team.id, status=status)]}
+
+    @app.delete("/api/invites/{invite_id}", tags=["invites"],
+                dependencies=[Depends(require_role("admin"))])
+    def invites_revoke(
+        invite_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        invites_mod.revoke_invite(
+            db, team_id=team.id, invite_id=invite_id, actor=actor,
+        )
+        return {"ok": True}
+
+    @app.post("/api/invites/accept", tags=["invites"], include_in_schema=True)
+    def invites_accept(payload: dict, db: Session = Depends(get_db)) -> dict:
+        # Public route — guest hasn't been minted yet.
+        if not isinstance(payload, dict) or "token" not in payload:
+            raise LFValidationError("body must contain token")
+        inv, key, plaintext = invites_mod.accept_invite(
+            db, token=str(payload["token"]), mint_key=_mint_guest_key,
+        )
+        return {"invite_id": inv.id, "api_key": plaintext,
+                "api_key_id": key.id, "team_id": inv.team_id}
+
+    # ---- smart lists -------------------------------------------------
+    @app.get("/api/smart-lists", tags=["smart-lists"])
+    def smart_lists_list(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        import json as _json
+        return {"items": [{
+            "slug": r.slug, "name": r.name,
+            "filter": _json.loads(r.filter_json),
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        } for r in smart_lists_mod.list_all(db, team_id=team.id)]}
+
+    @app.put("/api/smart-lists/{slug}", tags=["smart-lists"])
+    def smart_lists_upsert(
+        slug: str, payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        actor = getattr(request.state, "actor", "system")
+        row = smart_lists_mod.upsert(
+            db, team_id=team.id, slug=slug,
+            name=str(payload.get("name", slug)),
+            filter=payload.get("filter") or {},
+            actor=actor,
+        )
+        return {"slug": row.slug, "name": row.name}
+
+    @app.delete("/api/smart-lists/{slug}", tags=["smart-lists"])
+    def smart_lists_delete(
+        slug: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        smart_lists_mod.delete(db, team_id=team.id, slug=slug, actor=actor)
+        return {"ok": True}
+
+    @app.get("/api/smart-lists/{slug}/run", tags=["smart-lists"])
+    def smart_lists_run(
+        slug: str, limit: int = 200,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        tasks = smart_lists_mod.run(db, team_id=team.id, slug=slug, limit=limit)
+        return {"items": [{
+            "id": t.id, "title": t.title, "status": t.status,
+            "state": t.state, "priority": t.priority, "owner_id": t.owner_id,
+            "due_date": t.due_date.isoformat() if t.due_date else None,
+        } for t in tasks]}
+
+    # ---- markdown bundle export --------------------------------------
+    @app.get("/api/admin/export/bundle.zip", tags=["admin"],
+             dependencies=[Depends(require_role("admin"))])
+    def export_bundle(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> Response:
+        data = bundle_mod.build_bundle(db, team_id=team.id)
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="labflow-{team.slug}.zip"'},
+        )
 
     return app
 

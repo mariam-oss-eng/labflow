@@ -183,6 +183,8 @@ class Task(Base):
     )
     state: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     sla_breach_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # v0.12 — task priority (low|medium|high). Optional / nullable.
+    priority: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="tasks")
     owner: Mapped[Optional["Owner"]] = relationship(back_populates="tasks")
@@ -544,6 +546,9 @@ class NotificationPref(Base):
     digest_cadence: Mapped[str] = mapped_column(String(16), default="weekly")  # off|daily|weekly
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     muted_events: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON list
+    # v0.12: hour-of-day (0..23, UTC) at which this key expects its digest.
+    # NULL = "any time" — the legacy weekly behaviour.
+    digest_hour_utc: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
 
@@ -916,3 +921,141 @@ class Watcher(Base):
     entity_id: Mapped[int] = mapped_column(Integer)
     delivery: Mapped[str] = mapped_column(String(16), default="feed")  # feed|email|slack
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.12 — Recurring tasks, API key quotas
+# ---------------------------------------------------------------------------
+class RecurringTask(Base):
+    """Template that materialises new :class:`Task` rows on a cadence (v0.12).
+
+    Cadences:
+      * ``daily`` — every N days (``interval`` defaults to 1)
+      * ``weekly`` — on ``day_of_week`` (0=Monday … 6=Sunday)
+      * ``monthly`` — on ``day_of_month`` (1..28; >28 is clamped per month)
+
+    The materialiser is idempotent: it advances ``next_run_at`` *after*
+    creating the task, so re-running the sweeper before the next due
+    boundary is a no-op.
+    """
+
+    __tablename__ = "recurring_tasks"
+    __table_args__ = (
+        Index("ix_recurring_team_active_due", "team_id", "active", "next_run_at"),
+        UniqueConstraint("team_id", "slug", name="uq_recurring_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    slug: Mapped[str] = mapped_column(String(80))
+    cadence: Mapped[str] = mapped_column(String(16))  # daily|weekly|monthly
+    interval: Mapped[int] = mapped_column(Integer, default=1)
+    day_of_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    day_of_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    template_title: Mapped[str] = mapped_column(String(255))
+    template_owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
+    template_priority: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ApiKeyQuota(Base):
+    """Daily request quota for a single API key (v0.12)."""
+
+    __tablename__ = "api_key_quotas"
+    __table_args__ = (
+        UniqueConstraint("api_key_id", name="uq_quota_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="CASCADE")
+    )
+    daily_limit: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ApiKeyUsage(Base):
+    """Per-key, per-UTC-day request counter (v0.12).
+
+    Composite unique key ``(api_key_id, day)`` lets the rate-limiter
+    perform a single UPSERT per request.
+    """
+
+    __tablename__ = "api_key_usage"
+    __table_args__ = (
+        UniqueConstraint("api_key_id", "day", name="uq_usage_key_day"),
+        Index("ix_usage_team_day", "team_id", "day"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    api_key_id: Mapped[int] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="CASCADE")
+    )
+    day: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD (UTC)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------------------------------
+# v0.13 — Guest invites, smart lists
+# ---------------------------------------------------------------------------
+class Invite(Base):
+    """A pending external-collaborator invitation (v0.13).
+
+    On accept, a new guest :class:`ApiKey` is minted (with the configured
+    ``role`` and optional ``scopes``) and one :class:`ResourceAcl` row is
+    written for each ``(entity_type, entity_id)`` in ``acl_entries_json``
+    so the guest only sees what was shared.
+    """
+
+    __tablename__ = "invites"
+    __table_args__ = (
+        Index("ix_invite_token_hash", "token_hash", unique=True),
+        Index("ix_invite_team_status", "team_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    email: Mapped[str] = mapped_column(String(255))
+    token_hash: Mapped[str] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(16), default="viewer")
+    scopes: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    acl_entries_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|accepted|revoked
+    created_by_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    accepted_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class SmartList(Base):
+    """Saved declarative task filter (v0.13).
+
+    Filter is JSON: any of ``state``, ``assignee_handle``, ``label``,
+    ``due_before`` (ISO date), ``sprint_slug``, ``priority``. Empty/
+    missing keys are treated as wildcards.
+    """
+
+    __tablename__ = "smart_lists"
+    __table_args__ = (
+        UniqueConstraint("team_id", "slug", name="uq_smart_list_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    slug: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(128))
+    filter_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)

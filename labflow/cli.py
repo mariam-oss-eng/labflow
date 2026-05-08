@@ -221,6 +221,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--team")
     sp.set_defaults(func=_cmd_digest)
 
+    sp = sub.add_parser("repl", help="interactive REPL (v0.13)")
+    sp.set_defaults(func=lambda _a: __import__("labflow.repl", fromlist=["run"]).run())
+
     return p
 
 
