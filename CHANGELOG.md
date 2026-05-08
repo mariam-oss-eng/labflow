@@ -3,6 +3,78 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-05-08
+### Added — Federation, smart lists, bundle export, REPL
+- **Federated guest invites** (`/api/invites`). Admins issue
+  one-time, time-bound tokens scoped to specific entities. Acceptance
+  mints a fresh API key and materialises one `ResourceAcl` row per
+  invite scope, so the runtime enforcement path is identical to the
+  one used by every other key. Tokens are stored as SHA-256 hashes;
+  plaintext is returned exactly once. ADR-0017.
+- **Markdown bundle export** (`/api/admin/export/bundle.zip`). A
+  zip containing one `.md` per meeting / decision / task / wiki page
+  plus `manifest.json` and `audit.jsonl`. Pure stdlib (`zipfile`,
+  `io`); no new runtime dependency. The audit log inside the zip
+  carries the full v0.10 hash chain so an auditor can verify it
+  offline.
+- **Smart lists** (`/api/smart-lists`, `/api/smart-lists/{slug}/run`).
+  Slug-addressed declarative filters over the task table. Whitelisted
+  keys: `state`, `status`, `assignee_handle`, `priority`, `label`,
+  `due_before`, `sprint_slug`. Unknown keys are rejected at *save*
+  time so a typo can never silently match everything. ADR-0018.
+- **Interactive CLI REPL** — `labflow repl`. A stdlib `cmd`-based
+  shell with `tasks`, `meetings`, `decisions`, `task <id> show|done`,
+  `ingest`, `team`, `help`, `quit`. Reads/writes the same database as
+  the API server. `labflow.repl.run_script(commands)` lets test code
+  drive the REPL non-interactively.
+- **Showcase landing page** at `docs/index.md`: hero pitch, comparison
+  table vs Notion / Jira, "60-second start" snippet, expanded
+  architecture mermaid, and links to every v0.12 / v0.13 doc page.
+- **Four new ADRs** (0015 recurring tasks, 0016 quotas, 0017
+  federated invites, 0018 smart lists) and four new feature pages
+  (`boards.md`, `recurring_and_quotas.md`, `invites_and_bundle.md`,
+  `repl.md`).
+
+### Migration
+- `a7d8e91f1234` (same migration as v0.12) adds the `invites` and
+  `smart_lists` tables. Backward compatible.
+
+## [0.12.0] — 2026-05-08
+### Added — Boards, recurring tasks, quotas, bulk ops, digest hour
+- **Kanban board**. `/api/board/{workflow_slug}` returns columns
+  built from a workflow's state machine; `/app/board/{workflow_slug}`
+  renders a single self-contained HTML page (no JS framework). Tasks
+  not yet in any of the workflow's states fall into a synthetic
+  `inbox` column.
+- **Recurring tasks** (`/api/recurring-tasks`). Daily / weekly /
+  monthly cadences with `interval`, `day_of_week`, and `day_of_month`
+  (clamped to the last day of short months). The materialiser is a
+  background job that advances `next_run_at` *before* committing the
+  new task, so re-runs are idempotent. Each fire produces a real
+  `Task` row (with full audit history) owned by a synthetic
+  *Recurring tasks* meeting per team. ADR-0015.
+- **Per-API-key daily quotas** (`/api/admin/quotas`). Two narrow
+  tables — `api_key_quotas` (declared limit) and `api_key_usage`
+  (rolling per-day counter). Keys without a quota row remain
+  unlimited (back-compatible). Enforcement is opt-in per route.
+  ADR-0016.
+- **Bulk task operations** (`POST /api/tasks/bulk`). Atomic
+  `set_status`, `set_state`, `assign`, `set_priority`, and `complete`
+  across many task IDs. Per-task failures are isolated and reported
+  in the response — the rest of the batch still applies.
+- **Per-key digest hour scheduling**. `digest_hour_utc` on
+  `NotificationPref`, plus `/api/notifications/digest-due?hour=N` for
+  the sweeper to discover keys due in the current hour. Pass
+  `digest_hour_utc: -1` to clear.
+- **Task `priority` column** (low / medium / high). Optional, used
+  by smart-list filters and bulk operations.
+
+### Migration
+- `a7d8e91f1234` adds: `tasks.priority`, `recurring_tasks`,
+  `api_key_quotas`, `api_key_usage`, `notif_prefs.digest_hour_utc`,
+  `invites`, `smart_lists`. Reversible (`alembic downgrade -1`
+  verified).
+
 ## [0.11.0] — 2026-05-04
 ### Added — Knowledge base, smart links, GraphQL mutations, watchers, SDK
 - **Wiki / knowledge base** at `/api/wiki/pages`. Slug-addressed markdown

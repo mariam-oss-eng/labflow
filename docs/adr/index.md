@@ -20,3 +20,7 @@ when a decision is reversed, we add a new ADR that supersedes it.
 | [0012](0012-automation-rules.md) | Accepted | Declarative automation rules engine (v0.10) |
 | [0013](0013-wiki-and-smart-links.md) | Accepted | Wiki + smart entity links (v0.11) |
 | [0014](0014-graphql-mutations.md) | Accepted | GraphQL mutations on the hand-rolled engine (v0.11) |
+| [0015](0015-recurring-tasks.md) | Accepted | Recurring tasks live in the same job queue (v0.12) |
+| [0016](0016-api-key-quotas.md) | Accepted | Per-API-key daily quotas (v0.12) |
+| [0017](0017-federated-invites.md) | Accepted | Federated guest invites with scoped ACLs (v0.13) |
+| [0018](0018-smart-lists.md) | Accepted | Smart lists are declarative, not query DSL (v0.13) |

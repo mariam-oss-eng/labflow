@@ -97,6 +97,10 @@ nav:
           - "0012 · Automation rules engine": adr/0012-automation-rules.md
           - "0013 · Wiki & smart links": adr/0013-wiki-and-smart-links.md
           - "0014 · GraphQL mutations": adr/0014-graphql-mutations.md
+          - "0015 · Recurring tasks": adr/0015-recurring-tasks.md
+          - "0016 · API key quotas": adr/0016-api-key-quotas.md
+          - "0017 · Federated invites": adr/0017-federated-invites.md
+          - "0018 · Smart lists": adr/0018-smart-lists.md
   - Reference:
       - REST API: api.md
       - GraphQL: graphql.md
@@ -124,4 +128,10 @@ nav:
   - "v0.11 — Knowledge & polish":
       - Wiki & smart links: wiki.md
       - Watchers & activity feed: watchers.md
+  - "v0.12 — Boards & schedules":
+      - Boards & smart lists: boards.md
+      - Recurring tasks & quotas: recurring_and_quotas.md
+  - "v0.13 — Federation & CLI":
+      - Invites & bundle export: invites_and_bundle.md
+      - Interactive REPL: repl.md
   - Changelog: changelog.md
