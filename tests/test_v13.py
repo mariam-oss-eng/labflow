@@ -258,5 +258,9 @@ def test_repl_help_lists_commands(temp_db, default_team):
 
 # ============================================================ version bump
 def test_version_is_013(temp_db, app_client):
+    """Original v0.13 version assertion — kept loose so v0.14+ doesn't
+    regress us back; the API version always advances forward."""
     spec = app_client.get("/openapi.json").json()
-    assert spec["info"]["version"] == "0.13.0"
+    # Major.minor must be at least 0.13 (lexicographic on the tuple).
+    parts = tuple(int(x) for x in spec["info"]["version"].split(".")[:2])
+    assert parts >= (0, 13)

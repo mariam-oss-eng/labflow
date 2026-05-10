@@ -185,6 +185,9 @@ class Task(Base):
     sla_breach_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # v0.12 — task priority (low|medium|high). Optional / nullable.
     priority: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # v0.14 — explicit effort estimate in hours (replaces dag.py heuristic
+    # for tasks where it's been set; the heuristic is still used as fallback).
+    effort_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship(back_populates="tasks")
     owner: Mapped[Optional["Owner"]] = relationship(back_populates="tasks")
@@ -1059,3 +1062,110 @@ class SmartList(Base):
     filter_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.14 — Time tracking, feature flags, smart-list subscriptions, MCP audit
+# ---------------------------------------------------------------------------
+class TimeEntry(Base):
+    """Tracked time on a task (v0.14).
+
+    Either an open entry (``ended_at IS NULL``) recording an in-progress
+    timer, or a closed entry with both ``started_at`` and ``ended_at``
+    populated. Manual entries set both at creation; timer entries get
+    ``ended_at`` filled by a stop call.
+    """
+
+    __tablename__ = "time_entries"
+    __table_args__ = (
+        Index("ix_time_entries_task", "task_id"),
+        Index("ix_time_entries_team_owner", "team_id", "owner_id"),
+        Index("ix_time_entries_open", "team_id", "ended_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual|timer
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class FeatureFlag(Base):
+    """Per-team feature flag (v0.14).
+
+    Boolean (and optional JSON payload) toggle scoped to a team. Used by
+    server-side gates and surfaced to the client through ``/api/feature-flags``.
+    """
+
+    __tablename__ = "feature_flags"
+    __table_args__ = (
+        UniqueConstraint("team_id", "key", name="uq_feature_flag_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    key: Mapped[str] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class SmartListSubscription(Base):
+    """Webhook subscription for a smart list's run output (v0.14).
+
+    A sweeper hashes the current run's task IDs and only fires the
+    webhook when the digest differs from ``last_digest``.
+    """
+
+    __tablename__ = "smart_list_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("smart_list_id", "webhook_url",
+                         name="uq_smart_list_sub_url"),
+        Index("ix_smart_list_sub_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    smart_list_id: Mapped[int] = mapped_column(
+        ForeignKey("smart_lists.id", ondelete="CASCADE")
+    )
+    webhook_url: Mapped[str] = mapped_column(String(500))
+    secret: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    last_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_fired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.15 — Public share links (read-only, signed, TTL)
+# ---------------------------------------------------------------------------
+class PublicShare(Base):
+    """A read-only public link to a single entity (v0.15).
+
+    Token is the SHA-256 hash of a 32-byte random string returned to the
+    creator exactly once. ``expires_at`` is enforced server-side.
+    """
+
+    __tablename__ = "public_shares"
+    __table_args__ = (
+        Index("ix_public_share_token", "token_hash", unique=True),
+        Index("ix_public_share_team_entity", "team_id",
+              "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))   # decision|task|wiki
+    entity_id: Mapped[int] = mapped_column(Integer)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)

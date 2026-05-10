@@ -260,7 +260,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="LabFlow",
-        version="0.13.0",
+        version="0.15.0",
         description=(
             "Meeting-to-execution OS for research and technical teams. "
             "Turns transcripts into a queryable graph of decisions, tasks, "
@@ -273,7 +273,13 @@ def create_app() -> FastAPI:
             "recurring tasks, per-key API quotas, bulk task operations, "
             "and per-key digest scheduling. v0.13 adds federated guest "
             "invites with scoped ACLs, declarative smart-list filters, "
-            "Markdown bundle export, and an interactive CLI REPL."
+            "Markdown bundle export, and an interactive CLI REPL. "
+            "v0.14 adds task time tracking + effort estimates, per-team "
+            "feature flags, smart-list change subscriptions, and an "
+            "MCP-style JSON-RPC tool endpoint for external LLM agents. "
+            "v0.15 adds an HTMX task list with inline transitions, "
+            "public time-bound read-only share links, and an OpenAPI "
+            "→ stdlib Python client generator (`labflow gen-sdk`)."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -312,6 +318,10 @@ def create_app() -> FastAPI:
             {"name": "notifications", "description": "Per-key digest cadence and scheduling (v0.12)."},
             {"name": "invites", "description": "Federated guest invites with scoped ACLs (v0.13)."},
             {"name": "smart-lists", "description": "Saved declarative task filters (v0.13)."},
+            {"name": "time", "description": "Task time tracking with timers and manual entries (v0.14)."},
+            {"name": "feature-flags", "description": "Per-team feature flags (v0.14)."},
+            {"name": "mcp", "description": "MCP-style JSON-RPC tool endpoint for LLM agents (v0.14)."},
+            {"name": "shares", "description": "Time-bound public read-only share links (v0.15)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -2412,6 +2422,344 @@ def create_app() -> FastAPI:
             headers={"Content-Disposition":
                      f'attachment; filename="labflow-{team.slug}.zip"'},
         )
+
+    # ====================================================================
+    # v0.14 — time tracking, feature flags, smart-list subs, MCP tool API
+    # ====================================================================
+    from . import (  # noqa: PLC0415
+        feature_flags as ff_mod,
+        mcp as mcp_mod,
+        smart_list_subscriptions as sls_mod,
+        time_tracking as time_mod,
+    )
+
+    # ---- task effort estimate ----------------------------------------
+    @app.put("/api/tasks/{task_id}/effort", tags=["tasks"])
+    def task_set_effort(
+        task_id: int, payload: dict,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict) or "effort_hours" not in payload:
+            raise LFValidationError("body must contain effort_hours")
+        v = payload["effort_hours"]
+        if v is not None and (not isinstance(v, (int, float)) or v < 0
+                              or v > 10000):
+            raise LFValidationError("effort_hours must be in [0, 10000]")
+        task = db.get(models.Task, task_id)
+        if task is None or task.team_id != team.id:
+            raise NotFoundError(f"task {task_id} not found")
+        task.effort_hours = float(v) if v is not None else None
+        db.flush()
+        return {"id": task.id, "effort_hours": task.effort_hours}
+
+    # ---- time tracking ----------------------------------------------
+    @app.post("/api/tasks/{task_id}/time/start", tags=["time"])
+    def time_start(
+        task_id: int, payload: dict | None = None,
+        request: Request = None,  # type: ignore[assignment]
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        body = payload or {}
+        actor = getattr(request.state, "actor", "system") if request else "system"
+        owner_id = body.get("owner_id")
+        entry = time_mod.start_timer(
+            db, team_id=team.id, task_id=task_id,
+            owner_id=int(owner_id) if owner_id is not None else None,
+            note=body.get("note"), actor=actor,
+        )
+        return {"id": entry.id, "started_at": entry.started_at.isoformat(),
+                "task_id": entry.task_id, "owner_id": entry.owner_id}
+
+    @app.post("/api/tasks/time/stop", tags=["time"])
+    def time_stop(
+        payload: dict | None = None, request: Request = None,  # type: ignore[assignment]
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        body = payload or {}
+        actor = getattr(request.state, "actor", "system") if request else "system"
+        owner_id = body.get("owner_id")
+        entry = time_mod.stop_timer(
+            db, team_id=team.id,
+            owner_id=int(owner_id) if owner_id is not None else None,
+            actor=actor,
+        )
+        return {
+            "id": entry.id,
+            "task_id": entry.task_id,
+            "started_at": entry.started_at.isoformat(),
+            "ended_at": entry.ended_at.isoformat() if entry.ended_at else None,
+        }
+
+    @app.post("/api/tasks/{task_id}/time", tags=["time"])
+    def time_log_manual(
+        task_id: int, payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        try:
+            started = datetime.fromisoformat(payload["started_at"])
+            ended = datetime.fromisoformat(payload["ended_at"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise LFValidationError(
+                f"started_at and ended_at must be ISO datetimes: {e}"
+            ) from None
+        actor = getattr(request.state, "actor", "system")
+        owner_id = payload.get("owner_id")
+        entry = time_mod.log_manual(
+            db, team_id=team.id, task_id=task_id,
+            started_at=started, ended_at=ended,
+            owner_id=int(owner_id) if owner_id is not None else None,
+            note=payload.get("note"), actor=actor,
+        )
+        return {"id": entry.id,
+                "started_at": entry.started_at.isoformat(),
+                "ended_at": entry.ended_at.isoformat()}
+
+    @app.get("/api/tasks/{task_id}/time", tags=["time"])
+    def time_summary(
+        task_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        # Confirm task ownership before exposing aggregates.
+        task = db.get(models.Task, task_id)
+        if task is None or task.team_id != team.id:
+            raise NotFoundError(f"task {task_id} not found")
+        return time_mod.task_summary(db, team_id=team.id, task_id=task_id)
+
+    @app.get("/api/time/report", tags=["time"])
+    def time_team_report(
+        days: int = 14,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        from datetime import timedelta
+        days = max(1, min(int(days), 365))
+        since = (datetime.utcnow() - timedelta(days=days))
+        return time_mod.team_report(db, team_id=team.id, since=since)
+
+    # ---- feature flags ----------------------------------------------
+    @app.get("/api/feature-flags", tags=["feature-flags"])
+    def ff_list(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = ff_mod.list_all(db, team_id=team.id)
+        return {"items": [{"key": r.key, "enabled": r.enabled,
+                            "payload_json": r.payload_json,
+                            "updated_at": r.updated_at.isoformat()
+                            if r.updated_at else None}
+                           for r in rows]}
+
+    @app.put("/api/feature-flags/{key}", tags=["feature-flags"],
+             dependencies=[Depends(require_role("admin"))])
+    def ff_upsert(
+        key: str, payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        actor = getattr(request.state, "actor", "system")
+        row = ff_mod.upsert(
+            db, team_id=team.id, key=key,
+            enabled=bool(payload.get("enabled", False)),
+            payload=payload.get("payload"),
+            actor=actor,
+        )
+        return {"key": row.key, "enabled": row.enabled}
+
+    @app.delete("/api/feature-flags/{key}", tags=["feature-flags"],
+                dependencies=[Depends(require_role("admin"))])
+    def ff_delete(
+        key: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        ff_mod.delete(db, team_id=team.id, key=key, actor=actor)
+        return {"ok": True}
+
+    # ---- smart-list subscriptions -----------------------------------
+    @app.post("/api/smart-lists/{slug}/subscriptions", tags=["smart-lists"],
+              dependencies=[Depends(require_role("admin"))])
+    def sls_subscribe(
+        slug: str, payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        actor = getattr(request.state, "actor", "system")
+        sub = sls_mod.subscribe(
+            db, team_id=team.id, smart_list_slug=slug,
+            webhook_url=str(payload.get("webhook_url") or ""),
+            secret=payload.get("secret"), actor=actor,
+        )
+        return {"id": sub.id, "webhook_url": sub.webhook_url}
+
+    @app.get("/api/smart-lists/{slug}/subscriptions", tags=["smart-lists"])
+    def sls_list(
+        slug: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = sls_mod.list_for(db, team_id=team.id, smart_list_slug=slug)
+        return {"items": [{
+            "id": r.id, "webhook_url": r.webhook_url,
+            "last_digest": r.last_digest,
+            "last_fired_at": r.last_fired_at.isoformat()
+            if r.last_fired_at else None,
+        } for r in rows]}
+
+    @app.delete("/api/smart-lists/subscriptions/{sub_id}",
+                tags=["smart-lists"],
+                dependencies=[Depends(require_role("admin"))])
+    def sls_unsub(
+        sub_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        sls_mod.unsubscribe(db, team_id=team.id, sub_id=sub_id, actor=actor)
+        return {"ok": True}
+
+    @app.post("/api/admin/smart-lists/sweep", tags=["smart-lists"],
+              dependencies=[Depends(require_role("admin"))])
+    def sls_sweep(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"fired": sls_mod.sweep(db, team_id=team.id)}
+
+    # ---- MCP-style JSON-RPC tool endpoint ---------------------------
+    @app.get("/api/mcp/tools", tags=["mcp"])
+    def mcp_tools_list(
+        db: Session = Depends(get_db),  # noqa: ARG001 — kept for symmetry
+        team: models.Team = Depends(require_team),  # noqa: ARG001
+    ) -> dict:
+        return mcp_mod.list_tools()
+
+    @app.post("/api/mcp", tags=["mcp"])
+    def mcp_jsonrpc(
+        payload: dict,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return mcp_mod.jsonrpc(db, team_id=team.id, payload=payload)
+
+    # ====================================================================
+    # v0.15 — public shares, HTMX task list, SDK-gen advertisement
+    # ====================================================================
+    from . import (  # noqa: PLC0415
+        htmx_tasks as htmx_mod,
+        public_shares as shares_mod,
+    )
+
+    # ---- public share lifecycle (auth required) ---------------------
+    @app.post("/api/shares", status_code=201, tags=["shares"],
+              dependencies=[Depends(require_role("admin"))])
+    def shares_create(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if not isinstance(payload, dict):
+            raise LFValidationError("body must be an object")
+        try:
+            entity_type = str(payload["entity_type"])
+            entity_id = int(payload["entity_id"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise LFValidationError(
+                f"entity_type and entity_id are required: {e}"
+            ) from None
+        ttl = int(payload.get("ttl_hours", 168))
+        actor = getattr(request.state, "actor", "system")
+        cs = shares_mod.create(
+            db, team_id=team.id, entity_type=entity_type,
+            entity_id=entity_id, ttl_hours=ttl, actor=actor,
+        )
+        return {"id": cs.id, "token": cs.token,  # plaintext returned ONCE
+                "entity_type": cs.entity_type, "entity_id": cs.entity_id,
+                "expires_at": cs.expires_at.isoformat()}
+
+    @app.get("/api/shares", tags=["shares"])
+    def shares_list_route(
+        entity_type: str | None = None, entity_id: int | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = shares_mod.list_for(
+            db, team_id=team.id, entity_type=entity_type, entity_id=entity_id,
+        )
+        return {"items": [{
+            "id": r.id, "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "expires_at": r.expires_at.isoformat(),
+            "revoked_at": r.revoked_at.isoformat() if r.revoked_at else None,
+            "view_count": r.view_count,
+        } for r in rows]}
+
+    @app.delete("/api/shares/{share_id}", tags=["shares"],
+                dependencies=[Depends(require_role("admin"))])
+    def shares_revoke(
+        share_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        shares_mod.revoke(db, team_id=team.id, share_id=share_id, actor=actor)
+        return {"ok": True}
+
+    # ---- public read-only share view (NO auth) ----------------------
+    @app.get("/share/{token}", include_in_schema=False)
+    def shares_resolve_route(
+        token: str, db: Session = Depends(get_db),
+    ) -> JSONResponse:
+        row, rendered = shares_mod.resolve(db, token=token)
+        return JSONResponse({"share": {
+            "entity_type": row.entity_type,
+            "expires_at": row.expires_at.isoformat(),
+        }, "data": rendered})
+
+    # ---- HTMX task list page ----------------------------------------
+    @app.get("/app/tasks", response_class=HTMLResponse,
+             include_in_schema=False)
+    def htmx_tasks_page(
+        request: Request, q: str | None = None, status: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        return HTMLResponse(htmx_mod.render_page(
+            db, team_id=team.id, team_slug=team.slug, q=q, status=status,
+        ))
+
+    @app.get("/api/tasks/_table", response_class=HTMLResponse,
+             include_in_schema=False)
+    def htmx_tasks_fragment(
+        q: str | None = None, status: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        return HTMLResponse(htmx_mod.render_table_fragment(
+            db, team_id=team.id, q=q, status=status,
+        ))
+
+    @app.post("/api/tasks/_status/{task_id}", response_class=HTMLResponse,
+              include_in_schema=False)
+    def htmx_tasks_transition(
+        task_id: int, to: str,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> HTMLResponse:
+        return HTMLResponse(htmx_mod.transition_status(
+            db, team_id=team.id, task_id=task_id, to=to,
+        ))
 
     return app
 

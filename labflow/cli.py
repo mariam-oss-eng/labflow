@@ -173,6 +173,34 @@ def _cmd_digest(args) -> int:
     return 0
 
 
+def _cmd_gen_sdk(args) -> int:
+    """Generate a stdlib Python client from an OpenAPI JSON spec.
+
+    Source can be a local file or, if ``--from-server`` is passed, fetched
+    in-process from ``create_app().openapi()`` so this works even without
+    a running server.
+    """
+    import json
+    from . import sdk_gen
+
+    if args.from_server:
+        from .main import create_app
+        spec = create_app().openapi()
+    else:
+        if not args.spec:
+            print("--spec PATH or --from-server is required",
+                  file=sys.stderr)
+            return 2
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    src = sdk_gen.render(spec)
+    if args.out and args.out != "-":
+        Path(args.out).write_text(src, encoding="utf-8")
+        print(f"wrote {args.out} ({len(src)} bytes)")
+    else:
+        sys.stdout.write(src)
+    return 0
+
+
 # --- entrypoint ------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="labflow",
@@ -223,6 +251,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("repl", help="interactive REPL (v0.13)")
     sp.set_defaults(func=lambda _a: __import__("labflow.repl", fromlist=["run"]).run())
+
+    sp = sub.add_parser("gen-sdk",
+                        help="generate a stdlib Python client from an OpenAPI spec (v0.15)")
+    sp.add_argument("--spec", help="path to openapi.json")
+    sp.add_argument("--from-server", action="store_true",
+                    help="generate from this process's create_app().openapi()")
+    sp.add_argument("--out", default="-",
+                    help="output file path (defaults to stdout)")
+    sp.set_defaults(func=_cmd_gen_sdk)
 
     return p
 
