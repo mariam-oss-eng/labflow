@@ -101,6 +101,11 @@ nav:
           - "0016 · API key quotas": adr/0016-api-key-quotas.md
           - "0017 · Federated invites": adr/0017-federated-invites.md
           - "0018 · Smart lists": adr/0018-smart-lists.md
+          - "0019 · Time tracking": adr/0019-time-tracking.md
+          - "0020 · Feature flags": adr/0020-feature-flags.md
+          - "0021 · MCP tool endpoint": adr/0021-mcp-tool-endpoint.md
+          - "0022 · Public shares": adr/0022-public-shares.md
+          - "0023 · HTMX task list": adr/0023-htmx-task-list.md
   - Reference:
       - REST API: api.md
       - GraphQL: graphql.md
@@ -134,4 +139,10 @@ nav:
   - "v0.13 — Federation & CLI":
       - Invites & bundle export: invites_and_bundle.md
       - Interactive REPL: repl.md
+  - "v0.14 — Insights & intelligence":
+      - Time tracking & effort: time_tracking.md
+      - Feature flags & MCP tools: feature_flags_and_mcp.md
+  - "v0.15 — Native UX & ecosystem":
+      - HTMX tasks & SDK gen: htmx_and_sdk.md
+      - Public share links: public_shares.md
   - Changelog: changelog.md

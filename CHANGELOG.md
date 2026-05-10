@@ -3,6 +3,68 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-05-10
+### Added — Native UX & ecosystem
+- **HTMX-powered task list** at `/app/tasks` — server-rendered, no
+  build step, no JS framework. Filter-as-you-type by title and status
+  (`hx-trigger="keyup changed delay:200ms"`); inline status transitions
+  (`hx-post → outerHTML swap`). Three endpoints back the page:
+  `GET /app/tasks`, `GET /api/tasks/_table` (HTML fragment),
+  `POST /api/tasks/_status/{id}?to=X`. ADR-0023.
+- **Public read-only share links** (`/api/shares`, `GET /share/{token}`).
+  Mint a time-bound, revocable URL pointing at one decision, task, or
+  wiki page. The 32-byte URL-safe token is returned to the creator
+  exactly once and persisted as a SHA-256 hash (same rationale as
+  `auth.hash_api_key`). Default TTL 7 days, max 90 days. `view_count`
+  increments on every successful resolve. ADR-0022.
+- **OpenAPI → stdlib Python client generator** — `labflow gen-sdk`.
+  `--from-server` builds the spec in-process via `create_app().openapi()`;
+  `--spec FILE` reads any saved spec. Output is one self-contained
+  Python file with one `Client` class, one method per `operationId`,
+  and zero third-party deps (just `urllib` + `json`). The generated
+  source is asserted to compile in CI.
+
+### Migration
+- `b8e9fa028345` (shared with v0.14) adds the `public_shares` table.
+
+## [0.14.0] — 2026-05-10
+### Added — Insights & intelligence
+- **Task time tracking** — one row, two flavours
+  (`time_entries.source = 'timer' | 'manual'`). Endpoints:
+  `POST /api/tasks/{id}/time/start`, `POST /api/tasks/time/stop`,
+  `POST /api/tasks/{id}/time` (manual entry),
+  `GET /api/tasks/{id}/time` (per-task summary),
+  `GET /api/time/report?days=N` (team roll-up). The "single open timer
+  per owner" invariant is preserved by *implicitly stopping* an open
+  timer when a new one starts; the implicit stop is its own audit
+  event. ADR-0019.
+- **Task effort estimates** — `tasks.effort_hours` column, set via
+  `PUT /api/tasks/{id}/effort`. When set, replaces the heuristic in
+  `dag.py` so critical-path math uses real numbers.
+- **Per-team feature flags** (`/api/feature-flags`). Boolean toggle
+  with optional JSON payload, per-team, persisted, with a 1-second
+  process cache so hot-path callers don't hit the DB. Keys validated
+  against `[a-z0-9._-]{1..80}`. ADR-0020.
+- **Smart-list change subscriptions**
+  (`POST /api/smart-lists/{slug}/subscriptions`). A periodic sweeper
+  computes a SHA-256 digest of the current task IDs and emits an event
+  only when the digest differs from the previous fire — sweeps with
+  no list changes are no-ops. Detection is decoupled from delivery so
+  the caller can wire any transport.
+- **MCP-style JSON-RPC tool endpoint** at `POST /api/mcp`. Implements
+  `tools/list` and `tools/call` from the
+  [Model Context Protocol](https://modelcontextprotocol.io/), exposing
+  five **read-only** tools to external LLM agents (`search`,
+  `list_open_tasks`, `get_task`, `list_decisions`, `analytics`).
+  Mutations stay on the typed REST API where they get audit, ACL, and
+  idempotency for free. ADR-0021.
+
+### Migration
+- `b8e9fa028345`: adds `time_entries`, `feature_flags`,
+  `smart_list_subscriptions`, `public_shares` tables and a
+  `tasks.effort_hours` column. Forward-compatible — empty tables on
+  upgrade, no data migration needed.
+
 ## [0.13.0] — 2026-05-08
 ### Added — Federation, smart lists, bundle export, REPL
 - **Federated guest invites** (`/api/invites`). Admins issue

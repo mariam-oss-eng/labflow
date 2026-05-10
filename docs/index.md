@@ -6,16 +6,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mariam-oss-eng/labflow"><img alt="version" src="https://img.shields.io/badge/version-v0.13.0-2563eb"></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-267%20passing-22c55e"></a>
-  <a href="#"><img alt="api routes" src="https://img.shields.io/badge/API%20routes-130%2B-7c3aed"></a>
+  <a href="https://github.com/mariam-oss-eng/labflow"><img alt="version" src="https://img.shields.io/badge/version-v0.15.0-2563eb"></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-296%20passing-22c55e"></a>
+  <a href="#"><img alt="api routes" src="https://img.shields.io/badge/API%20routes-155%2B-7c3aed"></a>
   <a href="#"><img alt="python" src="https://img.shields.io/badge/python-3.10%2B-3776ab"></a>
   <a href="#"><img alt="license" src="https://img.shields.io/badge/license-MIT-000000"></a>
 </p>
 
 > Paste a transcript. Get a queryable graph of decisions, tasks,
 > experiments, and evidence. Stream them onto a Kanban board, share
-> them through scoped invites, export them as Markdown, ship them.
+> them through scoped invites, track your time on each one, expose
+> them to LLM agents over MCP, publish a single decision through a
+> revocable share link, ship them.
 
 ---
 
@@ -36,6 +38,12 @@ closes them, and where you're behind your sprint forecast.
 | **Queryable decision graph** | ❌ | ❌ | **✅** |
 | **Sprint burndown forecasting** | ❌ | ✅ | **✅** |
 | **Federated guest invites with scoped ACLs** | ⚠️ | ⚠️ | **✅** |
+| **Time tracking with single-open-timer invariant** | ❌ | ⚠️ | **✅** |
+| **MCP-style JSON-RPC tool endpoint for LLMs** | ❌ | ❌ | **✅** |
+| **Per-team feature flags (with payload, no SaaS)** | ❌ | ❌ | **✅** |
+| **HTMX-rendered task list, no SPA, no build step** | ❌ | ❌ | **✅** |
+| **Public read-only share links (SHA-256, time-bound)** | ⚠️ | ⚠️ | **✅** |
+| **One-command stdlib Python SDK generation** | ❌ | ❌ | **✅** |
 | Self-hosted, MIT-licensed, no telemetry | ❌ | ❌ | **✅** |
 
 ---
@@ -69,6 +77,34 @@ Open the **Kanban board** at `/app/board/_default`, the **REPL** with
 
 ---
 
+## What's new in v0.15
+
+* ⚡ **HTMX task list** at `/app/tasks` — server-rendered, no build step,
+  no JS framework. Filter-as-you-type by title and status; one-click
+  status transitions via `hx-post` + outerHTML swap.
+* 🔗 **Public share links** — mint a time-bound, revocable, **read-only**
+  URL pointing at one decision/task/wiki page. 32-byte token returned
+  exactly once; persisted as SHA-256.
+* 🛠️ **`labflow gen-sdk`** — generate a single-file, dependency-free
+  Python client from the OpenAPI spec, locally or `--from-server`. One
+  `Client` class with one method per `operationId`; `urllib` + `json` only.
+
+## What's new in v0.14
+
+* ⏱️ **Task time tracking** — timer start/stop with the single-open-timer
+  invariant (a 2nd `start` implicitly closes the first as its own
+  audit event), manual entries, per-task and team aggregates.
+* 📐 **Effort estimates** — `tasks.effort_hours` overrides the heuristic
+  in `dag.py` so critical-path math uses real numbers.
+* 🚩 **Per-team feature flags** with optional JSON payload and a 1-second
+  process cache so hot-path callers don't hit the DB.
+* 🤖 **MCP tool endpoint** at `POST /api/mcp` speaking JSON-RPC 2.0 — the
+  same wire format external LLM agents use. Five **read-only** tools
+  (`search`, `list_open_tasks`, `get_task`, `list_decisions`, `analytics`).
+  Mutations stay on the typed REST API.
+* 📡 **Smart-list change subscriptions** — a SHA-256-digest sweeper fires
+  only when the list's task IDs change since the previous fire.
+
 ## What's new in v0.13
 
 * 🤝 **Federated guest invites** with scoped ACLs (`/api/invites`) — share a
@@ -94,7 +130,7 @@ Open the **Kanban board** at `/app/board/_default`, the **REPL** with
 * 🕘 **Per-key digest scheduling** — pick the UTC hour you want your
   daily/weekly digest delivered.
 
-(See the [full changelog](changelog.md) for v0.4 → v0.13.)
+(See the [full changelog](changelog.md) for v0.4 → v0.15.)
 
 ---
 
@@ -142,10 +178,15 @@ attacker who steals your dump can't silently tamper with it.
    evidence threshold is met.
 5. **Plan** with the **Kanban board** (v0.12), saved **smart lists**
    (v0.13), and **sprint forecasting** (v0.10).
-6. **Share** with **scoped guest invites** (v0.13), webhooks, the SSE
-   live feed at `/api/stream`, or the official Python and TypeScript
-   SDKs.
-7. **Export** everything as a self-contained Markdown **bundle**
+6. **Track** the time you actually spend on each task with **timers**
+   or **manual entries** (v0.14), and set **effort estimates** that
+   feed the critical-path math.
+7. **Share** with **scoped guest invites** (v0.13), revocable
+   **public read-only links** (v0.15), webhooks, the SSE live feed at
+   `/api/stream`, or the official Python and TypeScript SDKs.
+8. **Integrate** with external LLM agents via the **MCP-style
+   JSON-RPC tool endpoint** at `POST /api/mcp` (v0.14).
+9. **Export** everything as a self-contained Markdown **bundle**
    (v0.13) — one file per entity plus a tamper-evidence audit log.
 
 ---
@@ -154,6 +195,10 @@ attacker who steals your dump can't silently tamper with it.
 
 * [Onboarding](onboarding.md) — set up your first team and key.
 * [Architecture overview](architecture.md) — how the pieces fit.
+* [HTMX tasks & SDK gen](htmx_and_sdk.md) — the v0.15 native UX layer.
+* [Public share links](public_shares.md) — read-only sharing without API keys.
+* [Time tracking & effort](time_tracking.md) — timers, manual entries, reports.
+* [Feature flags & MCP tools](feature_flags_and_mcp.md) — gating + LLM integrations.
 * [Boards & smart lists](boards.md) — the v0.12 / v0.13 planning surface.
 * [Recurring tasks & quotas](recurring_and_quotas.md) — schedules and limits.
 * [Federation & invites](invites_and_bundle.md) — guest sharing + Markdown export.

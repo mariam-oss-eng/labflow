@@ -24,3 +24,8 @@ when a decision is reversed, we add a new ADR that supersedes it.
 | [0016](0016-api-key-quotas.md) | Accepted | Per-API-key daily quotas (v0.12) |
 | [0017](0017-federated-invites.md) | Accepted | Federated guest invites with scoped ACLs (v0.13) |
 | [0018](0018-smart-lists.md) | Accepted | Smart lists are declarative, not query DSL (v0.13) |
+| [0019](0019-time-tracking.md) | Accepted | Time tracking lives in one row, two flavours (v0.14) |
+| [0020](0020-feature-flags.md) | Accepted | Per-team feature flags, no third-party service (v0.14) |
+| [0021](0021-mcp-tool-endpoint.md) | Accepted | A minimal MCP-style JSON-RPC tool endpoint (v0.14) |
+| [0022](0022-public-shares.md) | Accepted | Public share links — SHA-256 tokens, time-bound, revocable (v0.15) |
+| [0023](0023-htmx-task-list.md) | Accepted | HTMX over a SPA for the task list page (v0.15) |

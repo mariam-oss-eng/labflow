@@ -4,12 +4,18 @@
 
 **The meeting → execution operating system for research and technical teams.**
 
-[![Tests](https://img.shields.io/badge/tests-267%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-296%20passing-brightgreen)](#testing)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.13.0-6366f1)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.15.0-6366f1)](CHANGELOG.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com)
 [![GraphQL](https://img.shields.io/badge/GraphQL-query%20%2B%20mutation-e10098)](docs/graphql.md)
+[![HTMX](https://img.shields.io/badge/HTMX-tasks%20UI-3d72d7)](docs/htmx_and_sdk.md)
+[![MCP](https://img.shields.io/badge/MCP-tools%20endpoint-8a2be2)](docs/feature_flags_and_mcp.md)
+[![Time tracking](https://img.shields.io/badge/time-tracking-14b8a6)](docs/time_tracking.md)
+[![Feature flags](https://img.shields.io/badge/feature-flags-f59e0b)](docs/feature_flags_and_mcp.md)
+[![Public shares](https://img.shields.io/badge/public-shares-ef4444)](docs/public_shares.md)
+[![SDK gen](https://img.shields.io/badge/sdk-gen--cli-0d9488)](docs/htmx_and_sdk.md)
 [![Kanban](https://img.shields.io/badge/Kanban-board-2563eb)](docs/boards.md)
 [![Recurring](https://img.shields.io/badge/recurring-tasks-22c55e)](docs/recurring_and_quotas.md)
 [![Quotas](https://img.shields.io/badge/quotas-per--key%20daily-f97316)](docs/recurring_and_quotas.md)
@@ -29,22 +35,45 @@
 
 LabFlow turns transcripts, calls, and planning docs into a **typed, queryable
 graph** of decisions, action items, experiments, owners, deadlines, and
-evidence of completion. v0.12–v0.13 add an interactive **Kanban board**,
-**recurring tasks**, **per-API-key daily quotas**, **bulk task operations**,
-**per-key digest scheduling**, **federated guest invites** with scoped ACLs,
-**Markdown bundle export**, declarative **smart lists**, and an interactive
-**CLI REPL** — on top of the v0.10–v0.11 foundation (audit chain, signed
-backup, automation rules, forecasting, dashboards, wiki, smart links,
-GraphQL mutations, watchers, TypeScript SDK).
+evidence of completion. v0.14–v0.15 add **task time tracking & effort
+estimates**, **per-team feature flags**, an **MCP-style JSON-RPC tool
+endpoint** for external LLM agents, **smart-list change subscriptions**, an
+**HTMX-powered task list page** with inline transitions, **public time-bound
+share links**, and an **OpenAPI → stdlib Python client generator**
+(`labflow gen-sdk`) — on top of the v0.12–v0.13 foundation (Kanban board,
+recurring tasks, per-key quotas, federated guest invites, smart lists,
+Markdown bundle export, interactive CLI REPL).
 
 Built for ML research groups, AI/biotech labs, and prototype-heavy startup
 teams. Not another notes app.
 
-[Quickstart](#quickstart) · [Architecture](#architecture) · [What's new in 0.13](#whats-new-in-013) · [What's new in 0.12](#whats-new-in-012) · [Feature matrix](#feature-matrix) · [Documentation](https://mariam-oss-eng.github.io/labflow/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/) · [TypeScript SDK](sdk/typescript/)
+[Quickstart](#quickstart) · [Architecture](#architecture) · [What's new in 0.15](#whats-new-in-015) · [What's new in 0.14](#whats-new-in-014) · [Feature matrix](#feature-matrix) · [Documentation](https://mariam-oss-eng.github.io/labflow/) · [Changelog](CHANGELOG.md) · [Python SDK](labflow_client/) · [TypeScript SDK](sdk/typescript/)
 
 </div>
 
 ---
+
+## What's new in 0.15
+
+LabFlow 0.15 is the **native UX & ecosystem** release.
+
+| Area | What it does |
+|---|---|
+| ⚡ **HTMX task list** | `/app/tasks` — server-rendered, no build step. Filter-as-you-type, status filter, inline status transitions via `hx-post` + `outerHTML` swap. `htmx@2` is loaded from a CDN with an SRI hash; nothing else added. — [docs](docs/htmx_and_sdk.md) |
+| 🔗 **Public share links** | Mint a time-bound, revocable, **read-only** URL for one decision/task/wiki page. 32-byte token returned to the creator exactly once; persisted as SHA-256. View counter on every resolve. — [docs](docs/public_shares.md) |
+| 🛠️ **`labflow gen-sdk`** | Generate a single-file, dependency-free Python client from the OpenAPI spec, locally or `--from-server`. One `Client` class with one method per `operationId`; `urllib` + `json` only. The generated source is asserted to compile in CI. — [docs](docs/htmx_and_sdk.md) |
+
+## What's new in 0.14
+
+LabFlow 0.14 is the **insights & intelligence** release.
+
+| Area | What it does |
+|---|---|
+| ⏱️ **Time tracking** | Timers (`/start` + `/stop`) and manual entries on the same `time_entries` row. Single-open-timer-per-owner invariant: starting a 2nd timer implicitly stops the first as a separate audit event. Per-task and team aggregates at `/api/tasks/{id}/time` and `/api/time/report`. — [docs](docs/time_tracking.md) |
+| 📐 **Effort estimates** | `tasks.effort_hours` column overrides the `dag.py` heuristic so critical-path math uses real numbers. — `PUT /api/tasks/{id}/effort` |
+| 🚩 **Feature flags** | Per-team boolean toggles with optional JSON payload, persisted, with a 1-second process cache. Validated key shape (`[a-z0-9._-]{1..80}`). — [`/api/feature-flags`](docs/feature_flags_and_mcp.md) |
+| 🤖 **MCP tool endpoint** | `POST /api/mcp` speaks JSON-RPC 2.0 (`tools/list`, `tools/call`) — the same wire format external LLM agents use. Five **read-only** tools: `search`, `list_open_tasks`, `get_task`, `list_decisions`, `analytics`. Mutations stay on the typed REST API. — [docs](docs/feature_flags_and_mcp.md) |
+| 📡 **Smart-list subscriptions** | A SHA-256-digest sweeper fires only when a smart list's task IDs change since the last fire. Detection is decoupled from delivery so the caller wires any transport. — `/api/smart-lists/{slug}/subscriptions` |
 
 ## What's new in 0.13
 
@@ -219,57 +248,65 @@ labflow digest --weekly
 
 ## Feature matrix
 
-| Capability | v0.1–0.5 | v0.6 | v0.7 | v0.8 | v0.9 | v0.10 | v0.11 | **v0.12** | **v0.13** |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Multi-tenancy + API keys + RBAC | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Postgres + Alembic migrations | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Background job queue + worker | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Append-only audit log | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Outbound webhooks (HMAC) + GitHub inbound | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Hybrid keyword + semantic search | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Decision graph + Mermaid render | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Encryption at rest + GDPR export/erase | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Plugin loader (entry-point + dotted) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Comments + reactions + analytics + .ics + summaries | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AI summary + email digest + notification prefs | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WebSocket + GraphQL + OpenTelemetry + Postgres FTS | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Distributed worker leader-lock + Python SDK + Helm | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Workflows / state machines + SLA breach sweep | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Sprints / iterations + burndown | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Task DAG + critical-path analytics | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Resource ACLs (per-row allow-list) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Signed share links (TTL + passcode) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| API-key scopes (OAuth-style) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| CSV exports (RFC 4180 + Excel BOM) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slack-compatible notifier | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AI Copilot (multi-step tool agent) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Plugin marketplace (signed manifests) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Vector index v2 (HNSW + re-rank + persist) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Read-replica routing | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Time-travel queries (`?as_of=ISO`) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Installable PWA (manifest + SW + offline) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| i18n (en · es · fr) with `Accept-Language` | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tamper-evident audit hash chain | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Signed full-team backup & restore | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Declarative automation rules engine | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Sprint forecasting (least-squares ETA) | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Customisable dashboards (widget catalogue) | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
-| Wiki / knowledge base + revision history | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| Smart entity links (`#task` / `[[Page]]` / `@handle`) + backlinks | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| GraphQL mutations | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| Watchers + activity feed | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| TypeScript SDK (`@labflow/sdk`, zero deps) | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| GitHub Pages docs site (mkdocs-material) | — | — | — | — | — | — | ✅ | ✅ | ✅ |
-| **Kanban board (JSON + HTML)** | — | — | — | — | — | — | — | ✅ | ✅ |
-| **Recurring tasks (daily / weekly / monthly)** | — | — | — | — | — | — | — | ✅ | ✅ |
-| **Per-API-key daily quotas** | — | — | — | — | — | — | — | ✅ | ✅ |
-| **Bulk task operations** | — | — | — | — | — | — | — | ✅ | ✅ |
-| **Per-key digest hour scheduling** | — | — | — | — | — | — | — | ✅ | ✅ |
-| **Federated guest invites (scoped ACLs)** | — | — | — | — | — | — | — | — | ✅ |
-| **Markdown bundle export (zip)** | — | — | — | — | — | — | — | — | ✅ |
-| **Smart lists (declarative filters)** | — | — | — | — | — | — | — | — | ✅ |
-| **Interactive CLI REPL (`labflow repl`)** | — | — | — | — | — | — | — | — | ✅ |
+| Capability | v0.1–0.5 | v0.6 | v0.7 | v0.8 | v0.9 | v0.10 | v0.11 | v0.12 | v0.13 | **v0.14** | **v0.15** |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| Typed extraction (decisions / tasks / experiments) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multi-tenancy + API keys + RBAC | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Postgres + Alembic migrations | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Background job queue + worker | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Append-only audit log | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Outbound webhooks (HMAC) + GitHub inbound | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Hybrid keyword + semantic search | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Decision graph + Mermaid render | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Encryption at rest + GDPR export/erase | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Plugin loader (entry-point + dotted) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Comments + reactions + analytics + .ics + summaries | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AI summary + email digest + notification prefs | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WebSocket + GraphQL + OpenTelemetry + Postgres FTS | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Distributed worker leader-lock + Python SDK + Helm | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Workflows / state machines + SLA breach sweep | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Sprints / iterations + burndown | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Task DAG + critical-path analytics | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Resource ACLs (per-row allow-list) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Signed share links (TTL + passcode) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| API-key scopes (OAuth-style) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CSV exports (RFC 4180 + Excel BOM) | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Slack-compatible notifier | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AI Copilot (multi-step tool agent) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Plugin marketplace (signed manifests) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Vector index v2 (HNSW + re-rank + persist) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Read-replica routing | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Time-travel queries (`?as_of=ISO`) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Installable PWA (manifest + SW + offline) | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| i18n (en · es · fr) with `Accept-Language` | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tamper-evident audit hash chain | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Signed full-team backup & restore | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Declarative automation rules engine | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Sprint forecasting (least-squares ETA) | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Customisable dashboards (widget catalogue) | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Wiki / knowledge base + revision history | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Smart entity links (`#task` / `[[Page]]` / `@handle`) + backlinks | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GraphQL mutations | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Watchers + activity feed | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TypeScript SDK (`@labflow/sdk`, zero deps) | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GitHub Pages docs site (mkdocs-material) | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Kanban board (JSON + HTML) | — | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Recurring tasks (daily / weekly / monthly) | — | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Per-API-key daily quotas | — | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Bulk task operations | — | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Per-key digest hour scheduling | — | — | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| Federated guest invites (scoped ACLs) | — | — | — | — | — | — | — | — | ✅ | ✅ | ✅ |
+| Markdown bundle export (zip) | — | — | — | — | — | — | — | — | ✅ | ✅ | ✅ |
+| Smart lists (declarative filters) | — | — | — | — | — | — | — | — | ✅ | ✅ | ✅ |
+| Interactive CLI REPL (`labflow repl`) | — | — | — | — | — | — | — | — | ✅ | ✅ | ✅ |
+| **Task time tracking (timers + manual)** | — | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| **Task effort estimates (`effort_hours`)** | — | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| **Per-team feature flags** | — | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| **MCP-style JSON-RPC tool endpoint** | — | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| **Smart-list change subscriptions** | — | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| **HTMX task list (`/app/tasks`)** | — | — | — | — | — | — | — | — | — | — | ✅ |
+| **Public read-only share links** | — | — | — | — | — | — | — | — | — | — | ✅ |
+| **OpenAPI → stdlib Python SDK generator (`gen-sdk`)** | — | — | — | — | — | — | — | — | — | — | ✅ |
 
 ## Configuration
 
