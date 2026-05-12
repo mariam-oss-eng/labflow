@@ -6,9 +6,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mariam-oss-eng/labflow"><img alt="version" src="https://img.shields.io/badge/version-v0.15.0-2563eb"></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-296%20passing-22c55e"></a>
-  <a href="#"><img alt="api routes" src="https://img.shields.io/badge/API%20routes-155%2B-7c3aed"></a>
+  <a href="https://github.com/mariam-oss-eng/labflow"><img alt="version" src="https://img.shields.io/badge/version-v0.17.0-2563eb"></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-324%20passing-22c55e"></a>
+  <a href="#"><img alt="api routes" src="https://img.shields.io/badge/API%20routes-179%2B-7c3aed"></a>
+  <a href="#"><img alt="adrs" src="https://img.shields.io/badge/ADRs-30-0ea5e9"></a>
   <a href="#"><img alt="python" src="https://img.shields.io/badge/python-3.10%2B-3776ab"></a>
   <a href="#"><img alt="license" src="https://img.shields.io/badge/license-MIT-000000"></a>
 </p>
@@ -44,6 +45,13 @@ closes them, and where you're behind your sprint forecast.
 | **HTMX-rendered task list, no SPA, no build step** | ❌ | ❌ | **✅** |
 | **Public read-only share links (SHA-256, time-bound)** | ⚠️ | ⚠️ | **✅** |
 | **One-command stdlib Python SDK generation** | ❌ | ❌ | **✅** |
+| **Boolean query DSL (LFQL) with parser + AST explainer** | ❌ | ⚠️ | **✅** |
+| **Per-team custom fields with strict per-kind validation** | ⚠️ | ✅ | **✅** |
+| **Scheduled reports (LFQL → HMAC-signed webhook)** | ❌ | ❌ | **✅** |
+| **Webhook DLQ with replay/discard + audit** | ❌ | ⚠️ | **✅** |
+| **Zero-dep ANSI terminal dashboard (`labflow tui`)** | ❌ | ❌ | **✅** |
+| **Activity heatmap as standalone SVG (no JS)** | ❌ | ❌ | **✅** |
+| **API key rotation with grace window** | ❌ | ⚠️ | **✅** |
 | Self-hosted, MIT-licensed, no telemetry | ❌ | ❌ | **✅** |
 
 ---
@@ -76,6 +84,38 @@ Open the **Kanban board** at `/app/board/_default`, the **REPL** with
 `labflow repl`, or browse the GraphQL playground at `/graphql`.
 
 ---
+
+## What's new in v0.17
+
+* 💀 **Webhook dead-letter queue** — failed deliveries past their retry
+  cap are flagged with `dead_lettered_at`. List them, **replay**
+  (resets attempts), or **discard** (audit-only) — every transition
+  appears in the tamper-evident chain.
+* 📺 **Terminal UI** — `labflow tui` renders a zero-dependency ANSI
+  dashboard: task counts, top-owners bar chart, DLQ stats, and a
+  12-week activity strip. `--once` for piping into `less`.
+* 📊 **Activity heatmap** — daily counts derived from the audit log,
+  served as JSON or as a self-contained **SVG** (`/api/heatmap.svg`)
+  you can embed in any README.
+* 🔑 **API key rotation with grace** — `POST /api/keys/{id}/rotate`
+  mints a successor and stamps the old key's `rotation_grace_until`
+  so both keys work in parallel during the rollout. `sweep_expired`
+  revokes the old one when the window closes.
+
+## What's new in v0.16
+
+* 🔎 **LFQL** — a small boolean query language for tasks with a
+  hand-rolled parser, AST explainer (`/api/lfql/explain`), and
+  in-memory evaluator (`/api/lfql/run`).
+  ```
+  status:open AND priority:>=high AND title:"login bug"
+  ```
+* 🧩 **Custom fields** — `text` / `number` / `date` / `select` field
+  defs scoped per team, attached per task or decision. Strict
+  per-kind validation; values stored as text and coerced on read.
+* ⏰ **Scheduled reports** — saved (LFQL query, hourly/daily/weekly
+  cadence, target webhook). The sweeper runs due reports, signs the
+  body with HMAC-SHA256 if you set a secret, and records every run.
 
 ## What's new in v0.15
 

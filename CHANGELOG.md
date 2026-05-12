@@ -3,6 +3,72 @@
 All notable changes to LabFlow are documented in this file. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] — 2026-05-12
+### Added — Operational excellence
+- **Webhook dead-letter queue** (`labflow/webhook_dlq.py`). The
+  delivery loop now stamps `webhook_deliveries.dead_lettered_at` the
+  moment a delivery hits `_MAX_ATTEMPTS` without succeeding. New
+  endpoints: `GET /api/webhook-dlq`, `GET /api/webhook-dlq/stats`,
+  `POST /api/webhook-dlq/{id}/replay` (admin), `POST /api/webhook-dlq/{id}/discard`
+  (admin). Replay clears the dead-letter flag and resets attempts so
+  the regular deliverer picks the row up again; discard records an
+  acknowledgement in the audit chain without mutating the row.
+  ADR-0027.
+- **`labflow tui` — terminal dashboard** (`labflow/tui.py`). Hand-rolled
+  ANSI renderer, no `curses` / `rich` / `urwid`. Shows team header,
+  task counts split by status, top-5 owner bar chart, webhook DLQ
+  counters, and a 12-week activity strip. `--once` for piping or CI;
+  default loop polls every second and exits on `q`. ADR-0028.
+- **Activity heatmap** (`labflow/heatmap.py`). Daily counts derived
+  from `audit_events.created_at` — works retroactively, no rollup
+  table. `GET /api/heatmap` returns the JSON dict;
+  `GET /api/heatmap.svg` returns a self-contained SVG with the
+  GitHub-style 5-bucket palette, embeddable in any README via
+  `<img src=…>`. ADR-0029.
+- **API key rotation with grace window** (`labflow/key_rotation.py`).
+  `POST /api/keys/{id}/rotate` mints a successor and stamps
+  `rotation_grace_until` on the predecessor — both keys are valid in
+  parallel during the rollout. `POST /api/keys/_sweep-expired` runs
+  the cron-friendly sweeper that revokes keys whose grace window
+  has elapsed; `POST /api/keys/{id}/rotate/cancel` aborts an
+  in-progress rotation. New columns
+  `api_keys.rotated_from_id`/`api_keys.rotation_grace_until`. ADR-0030.
+
+### Migration
+- `c1d2e3f456ab` adds `webhook_deliveries.dead_lettered_at`,
+  `api_keys.rotated_from_id`, `api_keys.rotation_grace_until` (also
+  the v0.16 tables below).
+
+## [0.16.0] — 2026-05-12
+### Added — Power tools
+- **LFQL — LabFlow Query Language** (`labflow/lfql.py`). Hand-rolled
+  tokenizer + recursive-descent parser + AST evaluator for boolean
+  filters over tasks. Supported keys: `status`, `state`, `owner`,
+  `title`, `kind`, `priority`, `due`, `created`, `effort`. Operators:
+  `:`, `:>`, `:<`, `:>=`, `:<=`, `:!=` (with priority-rank semantics
+  for the priority key). Public endpoints: `GET /api/lfql/explain`
+  (returns the JSON AST) and `GET /api/lfql/run` (returns matched
+  tasks). ADR-0024.
+- **Per-team custom fields** (`labflow/custom_fields.py`). Define
+  fields once per `(team, entity_type)` and attach values to many
+  tasks/decisions. Four kinds: `text`, `number`, `date`, `select`
+  (with required `options`). Strict per-kind validation; values
+  stored as text and coerced on read via `get_typed_value`. New
+  models `CustomFieldDef`, `CustomFieldValue`. Endpoints under
+  `/api/custom-fields` and `/api/{entity_type}/{id}/fields/...`.
+  ADR-0025.
+- **Scheduled reports** (`labflow/scheduled_reports.py`). A report =
+  `(name, LFQL query, cadence, webhook_url)`. The sweeper
+  `run_due()` runs reports whose `next_run_at` is in the past, POSTs
+  the matching task IDs (HMAC-SHA256 signed if you set a `secret`),
+  and records every run in a separate `scheduled_report_runs` table.
+  Cadences: `hourly`, `daily`, `weekly`. Operator endpoint
+  `POST /api/reports/_run-due`. ADR-0026.
+
+### Migration
+- `c1d2e3f456ab` (shared with v0.17 above) adds `custom_field_defs`,
+  `custom_field_values`, `scheduled_reports`, `scheduled_report_runs`.
+
 ## [0.15.0] — 2026-05-10
 ### Added — Native UX & ecosystem
 - **HTMX-powered task list** at `/app/tasks` — server-rendered, no

@@ -29,3 +29,10 @@ when a decision is reversed, we add a new ADR that supersedes it.
 | [0021](0021-mcp-tool-endpoint.md) | Accepted | A minimal MCP-style JSON-RPC tool endpoint (v0.14) |
 | [0022](0022-public-shares.md) | Accepted | Public share links — SHA-256 tokens, time-bound, revocable (v0.15) |
 | [0023](0023-htmx-task-list.md) | Accepted | HTMX over a SPA for the task list page (v0.15) |
+| [0024](0024-lfql.md) | Accepted | LFQL — a tiny boolean query language for tasks (v0.16) |
+| [0025](0025-custom-fields.md) | Accepted | Per-team custom fields without an EAV explosion (v0.16) |
+| [0026](0026-scheduled-reports.md) | Accepted | Scheduled reports — pull-driven, separate from event webhooks (v0.16) |
+| [0027](0027-webhook-dlq.md) | Accepted | Webhook dead-letter queue, in-table (v0.17) |
+| [0028](0028-tui.md) | Accepted | A zero-dependency terminal UI (v0.17) |
+| [0029](0029-activity-heatmap.md) | Accepted | Activity heatmap from existing audit data, rendered as SVG (v0.17) |
+| [0030](0030-api-key-rotation.md) | Accepted | API key rotation with a configurable grace window (v0.17) |

@@ -106,6 +106,13 @@ nav:
           - "0021 · MCP tool endpoint": adr/0021-mcp-tool-endpoint.md
           - "0022 · Public shares": adr/0022-public-shares.md
           - "0023 · HTMX task list": adr/0023-htmx-task-list.md
+          - "0024 · LFQL — boolean query language": adr/0024-lfql.md
+          - "0025 · Custom fields without EAV": adr/0025-custom-fields.md
+          - "0026 · Scheduled reports": adr/0026-scheduled-reports.md
+          - "0027 · Webhook DLQ": adr/0027-webhook-dlq.md
+          - "0028 · Zero-dep terminal UI": adr/0028-tui.md
+          - "0029 · Activity heatmap (SVG)": adr/0029-activity-heatmap.md
+          - "0030 · API key rotation": adr/0030-api-key-rotation.md
   - Reference:
       - REST API: api.md
       - GraphQL: graphql.md
@@ -145,4 +152,8 @@ nav:
   - "v0.15 — Native UX & ecosystem":
       - HTMX tasks & SDK gen: htmx_and_sdk.md
       - Public share links: public_shares.md
+  - "v0.16 — Power tools":
+      - LFQL, custom fields & scheduled reports: lfql_and_reports.md
+  - "v0.17 — Operational excellence":
+      - Webhook DLQ, TUI, heatmap, key rotation: ops_v17.md
   - Changelog: changelog.md
