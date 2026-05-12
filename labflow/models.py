@@ -77,6 +77,15 @@ class ApiKey(Base):
     # v0.8 — scope tokens, comma-separated. NULL means "all scopes" (back-compat).
     # Recognised scopes: read, write, admin, webhook:emit, plugin:install
     scopes: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # v0.17 — key rotation: when set, this row is the *successor* of
+    # ``rotated_from_id`` and the predecessor remains valid until
+    # ``rotation_grace_until``. A nightly sweeper revokes expired predecessors.
+    rotated_from_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    rotation_grace_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
     team: Mapped["Team"] = relationship()
 
@@ -357,6 +366,11 @@ class WebhookDelivery(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    # v0.17 — when set, the delivery exhausted its retry cap and now lives
+    # in the dead-letter queue. Set to NULL again on successful replay.
+    dead_lettered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1168,4 +1182,104 @@ class PublicShare(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+# ---------------------------------------------------------------------------
+# v0.16 — Custom fields, scheduled reports
+# ---------------------------------------------------------------------------
+class CustomFieldDef(Base):
+    """A user-defined field attached to one entity kind, per team (v0.16).
+
+    ``kind`` controls how the value is validated / coerced:
+
+    * ``text`` — arbitrary string (max 4 KB)
+    * ``number`` — coerced to float
+    * ``date`` — ISO-8601 string, parsed to datetime on read
+    * ``select`` — one of ``options`` (a JSON-encoded list of strings)
+    """
+
+    __tablename__ = "custom_field_defs"
+    __table_args__ = (
+        UniqueConstraint("team_id", "entity_type", "key",
+                         name="uq_cfdef_team_entity_key"),
+        Index("ix_cfdef_team_entity", "team_id", "entity_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(32))   # task|decision
+    key: Mapped[str] = mapped_column(String(64))
+    label: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))          # text|number|date|select
+    options_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class CustomFieldValue(Base):
+    """A value for one (entity, field def) pair (v0.16)."""
+
+    __tablename__ = "custom_field_values"
+    __table_args__ = (
+        UniqueConstraint("def_id", "entity_id", name="uq_cfval_def_entity"),
+        Index("ix_cfval_team_entity", "team_id", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    def_id: Mapped[int] = mapped_column(
+        ForeignKey("custom_field_defs.id", ondelete="CASCADE")
+    )
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[int] = mapped_column(Integer)
+    value: Mapped[str] = mapped_column(Text)               # always stored as text
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ScheduledReport(Base):
+    """A saved LFQL query that runs on a cadence (v0.16).
+
+    ``cadence`` is one of ``hourly|daily|weekly``. The sweeper compares
+    ``last_run_at`` against ``now()`` and fires due reports. When fired,
+    the matching task IDs are POSTed to ``webhook_url`` (HMAC-signed if
+    ``secret`` is set) and a :class:`ScheduledReportRun` row is appended.
+    """
+
+    __tablename__ = "scheduled_reports"
+    __table_args__ = (
+        UniqueConstraint("team_id", "name", name="uq_schedrep_team_name"),
+        Index("ix_schedrep_team_due", "team_id", "next_run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120))
+    query: Mapped[str] = mapped_column(Text)               # an LFQL expression
+    cadence: Mapped[str] = mapped_column(String(16))       # hourly|daily|weekly
+    webhook_url: Mapped[str] = mapped_column(String(500))
+    secret: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class ScheduledReportRun(Base):
+    """A single execution of a :class:`ScheduledReport` (v0.16)."""
+
+    __tablename__ = "scheduled_report_runs"
+    __table_args__ = (
+        Index("ix_schedrep_run_report", "report_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("scheduled_reports.id", ondelete="CASCADE")
+    )
+    matched: Mapped[int] = mapped_column(Integer, default=0)
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False)
+    status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)

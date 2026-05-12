@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "labflow"
-version = "0.15.0"
+version = "0.17.0"
 description = "LabFlow — meeting-to-execution OS for research and technical teams"
 requires-python = ">=3.10"
 readme = "README.md"

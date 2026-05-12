@@ -163,6 +163,9 @@ def deliver_pending(
         if 200 <= status < 300:
             d.success = True
             successes += 1
+        elif d.attempts >= _MAX_ATTEMPTS and d.dead_lettered_at is None:
+            # v0.17 — final attempt failed: enter the dead-letter queue.
+            d.dead_lettered_at = now_utc()
     sess.flush()
     return successes
 

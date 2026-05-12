@@ -201,6 +201,33 @@ def _cmd_gen_sdk(args) -> int:
     return 0
 
 
+def _cmd_tui(args) -> int:
+    """Render the terminal dashboard (v0.17)."""
+    from sqlalchemy import select as sa_select
+    from . import models, tui
+    from .auth import ensure_bootstrap_team
+    from .config import get_settings
+
+    db_mod = _bootstrap_db()
+    SessionLocal = db_mod.get_session_factory()
+    with SessionLocal() as sess:
+        slug = args.team or get_settings().bootstrap_team
+        team = sess.execute(
+            sa_select(models.Team).where(models.Team.slug == slug)
+        ).scalar_one_or_none()
+        if team is None:
+            if args.team:
+                print(f"team {slug!r} not found", file=sys.stderr)
+                return 2
+            team = ensure_bootstrap_team(sess)
+            sess.commit()
+        try:
+            tui.run(sess, team=team, refresh_s=args.refresh, once=args.once)
+        except KeyboardInterrupt:
+            return 0
+    return 0
+
+
 # --- entrypoint ------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="labflow",
@@ -260,6 +287,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default="-",
                     help="output file path (defaults to stdout)")
     sp.set_defaults(func=_cmd_gen_sdk)
+
+    sp = sub.add_parser("tui",
+                        help="ANSI dashboard in the terminal (v0.17)")
+    sp.add_argument("--team", default=None,
+                    help="team slug; defaults to the bootstrap team")
+    sp.add_argument("--once", action="store_true",
+                    help="render one snapshot and exit (default: live loop)")
+    sp.add_argument("--refresh", type=float, default=1.0,
+                    help="refresh interval in seconds")
+    sp.set_defaults(func=_cmd_tui)
 
     return p
 

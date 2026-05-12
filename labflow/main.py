@@ -279,7 +279,15 @@ def create_app() -> FastAPI:
             "MCP-style JSON-RPC tool endpoint for external LLM agents. "
             "v0.15 adds an HTMX task list with inline transitions, "
             "public time-bound read-only share links, and an OpenAPI "
-            "→ stdlib Python client generator (`labflow gen-sdk`)."
+            "→ stdlib Python client generator (`labflow gen-sdk`). "
+            "v0.16 adds **LFQL** (a small boolean query language), "
+            "per-team **custom fields** for tasks/decisions, and "
+            "**scheduled reports** that fire LFQL queries at "
+            "hourly/daily/weekly cadence. v0.17 adds a webhook "
+            "**dead-letter queue** with replay/discard, an ANSI "
+            "**terminal dashboard** (`labflow tui`), an "
+            "**activity heatmap** (JSON + standalone SVG), and "
+            "**API key rotation** with a configurable grace window."
         ),
         contact={"name": "LabFlow", "url": "https://github.com/mariam-oss-eng/labflow"},
         license_info={"name": "MIT"},
@@ -322,6 +330,12 @@ def create_app() -> FastAPI:
             {"name": "feature-flags", "description": "Per-team feature flags (v0.14)."},
             {"name": "mcp", "description": "MCP-style JSON-RPC tool endpoint for LLM agents (v0.14)."},
             {"name": "shares", "description": "Time-bound public read-only share links (v0.15)."},
+            {"name": "lfql", "description": "LabFlow Query Language — boolean filter DSL (v0.16)."},
+            {"name": "custom-fields", "description": "Per-team custom fields on tasks / decisions (v0.16)."},
+            {"name": "reports", "description": "Scheduled LFQL reports with webhook delivery (v0.16)."},
+            {"name": "webhook-dlq", "description": "Webhook dead-letter queue: replay / discard (v0.17)."},
+            {"name": "heatmap", "description": "Activity heatmap (JSON + standalone SVG) (v0.17)."},
+            {"name": "key-rotation", "description": "API key rotation with grace window (v0.17)."},
             {"name": "admin", "description": "Team-scoped administration: export, erase, retention."},
             {"name": "system", "description": "Health, readiness, metrics, live updates (SSE/WS)."},
         ],
@@ -2760,6 +2774,328 @@ def create_app() -> FastAPI:
         return HTMLResponse(htmx_mod.transition_status(
             db, team_id=team.id, task_id=task_id, to=to,
         ))
+
+    # ====================================================================
+    # v0.16 — LFQL, custom fields, scheduled reports
+    # ====================================================================
+    from . import (  # noqa: PLC0415
+        custom_fields as cf_mod,
+        lfql as lfql_mod,
+        scheduled_reports as reports_mod,
+    )
+
+    # ---- LFQL --------------------------------------------------------
+    @app.get("/api/lfql/explain", tags=["lfql"])
+    def lfql_explain(
+        q: str,
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"query": q, "ast": lfql_mod.explain(q)}
+
+    @app.get("/api/lfql/run", tags=["lfql"])
+    def lfql_run(
+        q: str, limit: int = 100,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if limit < 1 or limit > 500:
+            raise LFValidationError("limit must be in [1, 500]")
+        rows = lfql_mod.run(db, team_id=team.id, query=q, limit=limit)
+        return {"matched": len(rows),
+                "items": [{"id": t.id, "title": t.title, "status": t.status,
+                           "priority": t.priority,
+                           "owner_handle": t.owner.handle if t.owner else None}
+                          for t in rows]}
+
+    # ---- custom fields ----------------------------------------------
+    @app.post("/api/custom-fields", tags=["custom-fields"], status_code=201)
+    def cf_define(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        row = cf_mod.define_field(
+            db, team_id=team.id, actor=actor,
+            entity_type=payload.get("entity_type"),
+            key=payload.get("key"), label=payload.get("label", ""),
+            kind=payload.get("kind"),
+            options=payload.get("options"),
+            required=bool(payload.get("required", False)),
+        )
+        return {"id": row.id, "entity_type": row.entity_type,
+                "key": row.key, "kind": row.kind}
+
+    @app.get("/api/custom-fields", tags=["custom-fields"])
+    def cf_list(
+        entity_type: str | None = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = cf_mod.list_fields(db, team_id=team.id, entity_type=entity_type)
+        return {"items": [{
+            "id": r.id, "entity_type": r.entity_type, "key": r.key,
+            "label": r.label, "kind": r.kind, "required": r.required,
+            "options": (None if r.options_json is None
+                        else __import__("json").loads(r.options_json)),
+        } for r in rows]}
+
+    @app.delete("/api/custom-fields/{def_id}", tags=["custom-fields"],
+                dependencies=[Depends(require_role("admin"))])
+    def cf_delete(
+        def_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        cf_mod.delete_field(db, team_id=team.id, def_id=def_id, actor=actor)
+        return {"ok": True}
+
+    @app.put("/api/{entity_type}/{entity_id}/fields/{key}",
+             tags=["custom-fields"])
+    def cf_set(
+        entity_type: str, entity_id: int, key: str, payload: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        if "value" not in payload:
+            raise LFValidationError("body must contain value")
+        cf_mod.set_value(
+            db, team_id=team.id, entity_type=entity_type,
+            entity_id=entity_id, key=key, value=payload["value"], actor=actor,
+        )
+        return {"ok": True, "values": cf_mod.list_values(
+            db, team_id=team.id, entity_type=entity_type,
+            entity_id=entity_id,
+        )}
+
+    @app.get("/api/{entity_type}/{entity_id}/fields", tags=["custom-fields"])
+    def cf_get(
+        entity_type: str, entity_id: int,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        if entity_type not in cf_mod.VALID_ENTITIES:
+            raise LFValidationError(
+                f"entity_type must be one of {sorted(cf_mod.VALID_ENTITIES)}"
+            )
+        return {"values": cf_mod.list_values(
+            db, team_id=team.id, entity_type=entity_type,
+            entity_id=entity_id,
+        )}
+
+    @app.delete("/api/{entity_type}/{entity_id}/fields/{key}",
+                tags=["custom-fields"])
+    def cf_unset(
+        entity_type: str, entity_id: int, key: str, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        cf_mod.delete_value(
+            db, team_id=team.id, entity_type=entity_type,
+            entity_id=entity_id, key=key, actor=actor,
+        )
+        return {"ok": True}
+
+    # ---- scheduled reports -------------------------------------------
+    @app.post("/api/reports", tags=["reports"], status_code=201)
+    def reports_create(
+        payload: dict, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        row = reports_mod.create(
+            db, team_id=team.id, actor=actor,
+            name=payload.get("name", ""),
+            query=payload.get("query", ""),
+            cadence=payload.get("cadence", ""),
+            webhook_url=payload.get("webhook_url", ""),
+            secret=payload.get("secret"),
+        )
+        return {"id": row.id, "name": row.name, "cadence": row.cadence,
+                "next_run_at": row.next_run_at.isoformat()
+                if row.next_run_at else None}
+
+    @app.get("/api/reports", tags=["reports"])
+    def reports_list(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = reports_mod.list_reports(db, team_id=team.id)
+        return {"items": [{
+            "id": r.id, "name": r.name, "query": r.query,
+            "cadence": r.cadence, "enabled": r.enabled,
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "next_run_at": r.next_run_at.isoformat() if r.next_run_at else None,
+        } for r in rows]}
+
+    @app.delete("/api/reports/{report_id}", tags=["reports"],
+                dependencies=[Depends(require_role("admin"))])
+    def reports_delete(
+        report_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        reports_mod.delete(db, team_id=team.id, report_id=report_id,
+                           actor=actor)
+        return {"ok": True}
+
+    @app.get("/api/reports/{report_id}/runs", tags=["reports"])
+    def reports_runs(
+        report_id: int, limit: int = 50,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = reports_mod.runs_for(
+            db, team_id=team.id, report_id=report_id, limit=limit,
+        )
+        return {"items": [{
+            "id": r.id, "matched": r.matched, "delivered": r.delivered,
+            "status_code": r.status_code, "error": r.error,
+            "created_at": r.created_at.isoformat(),
+        } for r in rows]}
+
+    @app.post("/api/reports/_run-due", tags=["reports"],
+              dependencies=[Depends(require_role("admin"))])
+    def reports_run_due(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        n = reports_mod.run_due(db)
+        return {"executed": n}
+
+    # ====================================================================
+    # v0.17 — webhook DLQ, activity heatmap, API key rotation
+    # ====================================================================
+    from . import (  # noqa: PLC0415
+        heatmap as heatmap_mod,
+        key_rotation as rotation_mod,
+        webhook_dlq as dlq_mod,
+    )
+
+    # ---- webhook DLQ -------------------------------------------------
+    @app.get("/api/webhook-dlq", tags=["webhook-dlq"])
+    def dlq_list(
+        limit: int = 100, offset: int = 0,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        rows = dlq_mod.list_dead(
+            db, team_id=team.id, limit=limit, offset=offset,
+        )
+        return {"items": [{
+            "id": r.id, "event": r.event, "attempts": r.attempts,
+            "status_code": r.status_code,
+            "dead_lettered_at": r.dead_lettered_at.isoformat()
+            if r.dead_lettered_at else None,
+            "created_at": r.created_at.isoformat(),
+        } for r in rows]}
+
+    @app.get("/api/webhook-dlq/stats", tags=["webhook-dlq"])
+    def dlq_stats(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return dlq_mod.stats(db, team_id=team.id)
+
+    @app.post("/api/webhook-dlq/{delivery_id}/replay", tags=["webhook-dlq"],
+              dependencies=[Depends(require_role("admin"))])
+    def dlq_replay(
+        delivery_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        d = dlq_mod.replay(
+            db, team_id=team.id, delivery_id=delivery_id, actor=actor,
+        )
+        return {"id": d.id, "attempts": d.attempts}
+
+    @app.post("/api/webhook-dlq/{delivery_id}/discard", tags=["webhook-dlq"],
+              dependencies=[Depends(require_role("admin"))])
+    def dlq_discard(
+        delivery_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        dlq_mod.discard(
+            db, team_id=team.id, delivery_id=delivery_id, actor=actor,
+        )
+        return {"ok": True}
+
+    # ---- activity heatmap --------------------------------------------
+    @app.get("/api/heatmap", tags=["heatmap"])
+    def heatmap_json(
+        days: int = heatmap_mod.DAYS_DEFAULT,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        return {"days": days, "counts": heatmap_mod.daily_counts(
+            db, team_id=team.id, days=days,
+        )}
+
+    @app.get("/api/heatmap.svg", tags=["heatmap"],
+             response_class=Response)
+    def heatmap_svg(
+        days: int = heatmap_mod.DAYS_DEFAULT,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> Response:
+        counts = heatmap_mod.daily_counts(db, team_id=team.id, days=days)
+        svg = heatmap_mod.render_svg(counts)
+        return Response(content=svg, media_type="image/svg+xml")
+
+    # ---- API key rotation --------------------------------------------
+    @app.post("/api/keys/{key_id}/rotate", tags=["key-rotation"],
+              status_code=201,
+              dependencies=[Depends(require_role("admin"))])
+    def keys_rotate(
+        key_id: int, payload: dict | None = None, request: Request = None,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        body = payload or {}
+        actor = getattr(request.state, "actor", "system") if request else "system"
+        result = rotation_mod.rotate(
+            db, team_id=team.id, old_key_id=key_id,
+            grace_hours=int(body.get("grace_hours",
+                                     rotation_mod.GRACE_DEFAULT_HOURS)),
+            actor=actor,
+        )
+        # Plaintext is shown ONCE here; never persisted, never returned again.
+        return {
+            "new_key_id": result.new_id, "old_key_id": result.old_id,
+            "token": result.new_token,
+            "grace_until": result.grace_until.isoformat(),
+        }
+
+    @app.post("/api/keys/{key_id}/rotate/cancel", tags=["key-rotation"],
+              dependencies=[Depends(require_role("admin"))])
+    def keys_rotate_cancel(
+        key_id: int, request: Request,
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        actor = getattr(request.state, "actor", "system")
+        rotation_mod.cancel_rotation(
+            db, team_id=team.id, old_key_id=key_id, actor=actor,
+        )
+        return {"ok": True}
+
+    @app.post("/api/keys/_sweep-expired", tags=["key-rotation"],
+              dependencies=[Depends(require_role("admin"))])
+    def keys_sweep(
+        db: Session = Depends(get_db),
+        team: models.Team = Depends(require_team),
+    ) -> dict:
+        n = rotation_mod.sweep_expired(db, team_id=team.id)
+        return {"revoked": n}
 
     return app
 
